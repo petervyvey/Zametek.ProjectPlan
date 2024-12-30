@@ -1,0 +1,23 @@
+﻿<Project Sdk="WixToolset.Sdk/5.0.2">
+  <PropertyGroup>
+    <OutputName>projectplandotnet.0.9.0.installer.$(Platform)</OutputName>
+    <Platforms>x86;x64;ARM64</Platforms>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <SuppressValidation>false</SuppressValidation>
+  </PropertyGroup>
+  <ItemGroup>
+    <Content Include="readme.txt" />
+    <Content Include="zpp.ico" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="bsd2.rtf" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="WixToolset.UI.wixext" Version="5.0.2" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Zametek.ProjectPlan.CommandLine\Zametek.ProjectPlan.CommandLine.csproj" />
+    <ProjectReference Include="..\..\src\Zametek.ProjectPlan\Zametek.ProjectPlan.csproj" />
+  </ItemGroup>
+</Project>

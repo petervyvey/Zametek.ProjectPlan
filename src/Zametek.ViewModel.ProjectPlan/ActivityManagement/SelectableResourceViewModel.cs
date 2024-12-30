@@ -1,27 +1,17 @@
-﻿using Prism.Mvvm;
+﻿using ReactiveUI;
 using System.Globalization;
+using Zametek.Contract.ProjectPlan;
 
 namespace Zametek.ViewModel.ProjectPlan
 {
     public class SelectableResourceViewModel
-        : BindableBase
+        : ViewModelBase, ISelectableResourceViewModel
     {
-        #region Fields
-
-        private string m_Name;
-        private bool m_IsSelected;
-
-        #endregion
-
         #region Ctors
 
-        public SelectableResourceViewModel(int id, string name, bool isSelected)
-            : this(id, name)
-        {
-            m_IsSelected = isSelected;
-        }
-
-        public SelectableResourceViewModel(int id, string name)
+        public SelectableResourceViewModel(
+            int id,
+            string name)
         {
             Id = id;
             m_Name = name;
@@ -36,32 +26,22 @@ namespace Zametek.ViewModel.ProjectPlan
             get;
         }
 
+        private string m_Name;
         public string Name
         {
-            get
-            {
-                return m_Name;
-            }
+            get => m_Name;
             set
             {
-                m_Name = value;
-                RaisePropertyChanged();
-                RaisePropertyChanged(nameof(DisplayName));
+                this.RaiseAndSetIfChanged(ref m_Name, value);
+                this.RaisePropertyChanged(nameof(DisplayName));
             }
         }
 
-        public string DisplayName => string.IsNullOrWhiteSpace(Name) ? Id.ToString(CultureInfo.InvariantCulture) : Name;
-
-        public bool IsSelected
+        public string DisplayName
         {
             get
             {
-                return m_IsSelected;
-            }
-            set
-            {
-                m_IsSelected = value;
-                RaisePropertyChanged();
+                return string.IsNullOrWhiteSpace(Name) ? Id.ToString(CultureInfo.InvariantCulture) : Name;
             }
         }
 

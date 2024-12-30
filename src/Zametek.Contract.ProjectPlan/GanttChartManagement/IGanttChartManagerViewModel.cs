@@ -1,33 +1,31 @@
-﻿using Prism.Interactivity.InteractionRequest;
-using System;
-using System.Windows.Input;
+﻿using System.Windows.Input;
 using Zametek.Common.ProjectPlan;
 
 namespace Zametek.Contract.ProjectPlan
 {
     public interface IGanttChartManagerViewModel
-        : INamed
+        : IKillSubscriptions, IDisposable
     {
-        IInteractionRequest NotificationInteractionRequest { get; }
-
-        DateTime ProjectStart { get; }
-
         bool IsBusy { get; }
 
-        bool HasStaleGanttChart { get; }
-
-        GanttChartModel GanttChart { get; }
-
-        bool UseBusinessDays { get; }
-
-        //bool ShowDates { get; }
-
-        //bool ShowDays { get; }
+        bool HasStaleOutputs { get; }
 
         bool HasCompilationErrors { get; }
 
-        ICommand GenerateGanttChartCommand { get; }
+        GroupByMode GroupByMode { get; set; }
 
-        ArrowGraphSettingsModel ArrowGraphSettings { get; }
+        AnnotationStyle AnnotationStyle { get; set; }
+
+        bool LabelGroups { get; set; }
+
+        bool ShowProjectFinish { get; set; }
+
+        bool ShowTracking { get; set; }
+
+        ICommand SaveGanttChartImageFileCommand { get; }
+
+        Task SaveGanttChartImageFileAsync(string? filename, int width, int height);
+
+        void BuildGanttChartPlotModel();
     }
 }

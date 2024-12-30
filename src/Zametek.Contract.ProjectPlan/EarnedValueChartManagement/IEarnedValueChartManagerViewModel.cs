@@ -1,26 +1,23 @@
-﻿using OxyPlot;
-using Prism.Interactivity.InteractionRequest;
-using System.Windows.Input;
+﻿using System.Windows.Input;
+using Zametek.Common.ProjectPlan;
 
 namespace Zametek.Contract.ProjectPlan
 {
     public interface IEarnedValueChartManagerViewModel
-        : INamed
+        : IKillSubscriptions, IDisposable
     {
-        IInteractionRequest NotificationInteractionRequest { get; }
-
         bool IsBusy { get; }
 
         bool HasStaleOutputs { get; }
 
-        PlotModel EarnedValueChartPlotModel { get; }
+        bool HasCompilationErrors { get; }
 
-        int EarnedValueChartOutputWidth { get; set; }
+        bool ViewProjections { get; set; }
 
-        int EarnedValueChartOutputHeight { get; set; }
+        ICommand SaveEarnedValueChartImageFileCommand { get; }
 
-        ICommand CopyEarnedValueChartToClipboardCommand { get; }
+        Task SaveEarnedValueChartImageFileAsync(string? filename, int width, int height);
 
-        ICommand ExportEarnedValueChartToCsvCommand { get; }
+        void BuildEarnedValueChartPlotModel();
     }
 }

@@ -1,221 +1,541 @@
-﻿using Prism.Events;
-using Prism.Mvvm;
-using System;
-using System.Collections.Generic;
+﻿using ReactiveUI;
+using System.Collections;
 using System.ComponentModel;
-using System.Linq;
+using System.Reactive.Concurrency;
+using System.Reactive.Linq;
 using Zametek.Common.ProjectPlan;
 using Zametek.Contract.ProjectPlan;
-using Zametek.Event.ProjectPlan;
 using Zametek.Maths.Graphs;
 
 namespace Zametek.ViewModel.ProjectPlan
 {
     public class ManagedActivityViewModel
-        : BindableBase, IManagedActivityViewModel, IEditableObject
+        : ViewModelBase, IManagedActivityViewModel, IEditableObject, INotifyDataErrorInfo
     {
         #region Fields
 
-        private DateTime? m_MinimumEarliestStartDateTime;
-        private DateTime? m_MaximumLatestFinishDateTime;
-        private DateTime m_ProjectStart;
-        private bool m_HasUpdatedDependencies;
+        private readonly ICoreViewModel m_CoreViewModel;
+        private DateTimeOffset? m_MinimumEarliestStartDateTime;
+        private DateTimeOffset? m_MaximumLatestFinishDateTime;
         private readonly IDateTimeCalculator m_DateTimeCalculator;
-        private readonly IEventAggregator m_EventService;
+        private readonly VertexGraphCompiler<int, int, int, IDependentActivity> m_VertexGraphCompiler;
+
+        private readonly IDisposable? m_ProjectStartSub;
+        private readonly IDisposable? m_ResourceSettingsSub;
+        private readonly IDisposable? m_WorkStreamSettingsSub;
+        private readonly IDisposable? m_DateTimeCalculatorCalculatorModeSub;
+        private readonly IDisposable? m_DateTimeCalculatorDisplayModeSub;
+        private readonly IDisposable? m_CompilationSub;
+
+        private static readonly string[] s_NoErrors = [];
+        private readonly Dictionary<string, List<string>> m_ErrorsByPropertyName;
 
         #endregion
 
         #region Ctors
 
-        private ManagedActivityViewModel(
-            IDateTimeCalculator dateTimeCalculator,
-            IEventAggregator eventService)
-        {
-            m_DateTimeCalculator = dateTimeCalculator ?? throw new ArgumentNullException(nameof(dateTimeCalculator));
-            m_EventService = eventService ?? throw new ArgumentNullException(nameof(eventService));
-            ResourceSelector = new ResourceSelectorViewModel();
-            UpdateAllocatedToResources();
-            UpdatedDependencies = new HashSet<int>();
-        }
-
         public ManagedActivityViewModel(
-            IDependentActivity<int, int> dependentActivity,
-            DateTime projectStart,
-            DateTime? minimumEarliestStartDateTime,
-            DateTime? maximumLatestFinishDateTime,
-            IEnumerable<ResourceModel> targetResources,
+            ICoreViewModel coreViewModel,
+            IDependentActivity dependentActivity,
             IDateTimeCalculator dateTimeCalculator,
-            IEventAggregator eventService)
-            : this(dateTimeCalculator, eventService)
+            VertexGraphCompiler<int, int, int, IDependentActivity> vertexGraphCompiler,
+            DateTimeOffset projectStart,
+            IEnumerable<ActivityTrackerModel>? trackers,
+            DateTimeOffset? minimumEarliestStartDateTime,
+            DateTimeOffset? maximumLatestFinishDateTime)
         {
-            DependentActivity = dependentActivity ?? throw new ArgumentNullException(nameof(dependentActivity));
+            ArgumentNullException.ThrowIfNull(coreViewModel);
+            ArgumentNullException.ThrowIfNull(dependentActivity);
+            ArgumentNullException.ThrowIfNull(dateTimeCalculator);
+            ArgumentNullException.ThrowIfNull(vertexGraphCompiler);
+            m_CoreViewModel = coreViewModel;
+            DependentActivity = dependentActivity;
+            m_DateTimeCalculator = dateTimeCalculator;
             m_ProjectStart = projectStart;
             m_MinimumEarliestStartDateTime = minimumEarliestStartDateTime;
             m_MaximumLatestFinishDateTime = maximumLatestFinishDateTime;
-            var selectedResources = new HashSet<int>(DependentActivity.TargetResources.ToList());
-            ResourceSelector.SetTargetResources(targetResources, selectedResources);
-            UpdateAllocatedToResources();
+            m_VertexGraphCompiler = vertexGraphCompiler;
+            m_ErrorsByPropertyName = [];
+            ResourceSelector = new ResourceSelectorViewModel();
+            m_ResourceSettings = m_CoreViewModel.ResourceSettings;
+            RefreshResourceSelector();
+            WorkStreamSelector = new WorkStreamSelectorViewModel();
+            m_WorkStreamSettings = m_CoreViewModel.WorkStreamSettings;
+            RefreshWorkStreamSelector();
 
             if (MinimumEarliestStartDateTime.HasValue)
             {
-                CalculateMinimumEarliestStartTime();
+                SetMinimumEarliestStartTimes(MinimumEarliestStartDateTime, skipValidation: true);
             }
             else if (MinimumEarliestStartTime.HasValue)
             {
-                CalculateMinimumEarliestStartDateTime();
+                SetMinimumEarliestStartTimes(MinimumEarliestStartTime);
             }
 
             if (MaximumLatestFinishDateTime.HasValue)
             {
-                CalculateMaximumLatestFinishTime();
+                SetMaximumLatestFinishTimes(MaximumLatestFinishDateTime, skipValidation: true);
             }
             else if (MaximumLatestFinishTime.HasValue)
             {
-                CalculateMaximumLatestFinishDateTime();
+                SetMaximumLatestFinishTimes(MaximumLatestFinishTime);
             }
+
+            TrackerSet = new ActivityTrackerSetViewModel(
+                m_CoreViewModel, DependentActivity.Id, trackers ?? []);
+
+            // We use Scheduler.CurrentThread here to ensure that wide sweeping changes,
+            // such as settings changes, are performed in the same thread from the CoreViewModel.
+            // That way they must complete before the CoreViewModel can proceed to compilation.
+
+            m_ShowDates = this
+                .WhenAnyValue(x => x.m_CoreViewModel.ShowDates)
+                .ToProperty(this, x => x.ShowDates);
+
+            m_ProjectStartSub = this
+                .WhenAnyValue(x => x.m_CoreViewModel.ProjectStart)
+                .ObserveOn(Scheduler.CurrentThread)
+                .Subscribe(x => ProjectStart = x);
+
+            m_ResourceSettingsSub = this
+                .WhenAnyValue(x => x.m_CoreViewModel.ResourceSettings)
+                //.ObserveOn(RxApp.TaskpoolScheduler)
+                .ObserveOn(RxApp.MainThreadScheduler)
+                .Subscribe(x => ResourceSettings = x);
+
+            m_WorkStreamSettingsSub = this
+                .WhenAnyValue(x => x.m_CoreViewModel.WorkStreamSettings)
+                //.ObserveOn(RxApp.TaskpoolScheduler)
+                .ObserveOn(RxApp.MainThreadScheduler)
+                .Subscribe(x => WorkStreamSettings = x);
+
+            m_DateTimeCalculatorCalculatorModeSub = this
+                .ObservableForProperty(x => x.m_DateTimeCalculator.CalculatorMode)
+                .ObserveOn(Scheduler.CurrentThread)
+                .Subscribe(_ => UpdateEarliestStartAndLatestFinishDateTimes());
+
+            m_DateTimeCalculatorDisplayModeSub = this
+                .ObservableForProperty(x => x.m_DateTimeCalculator.DisplayMode)
+                .ObserveOn(Scheduler.CurrentThread)
+                .Subscribe(_ => RefreshStartAndFinishValues());
+
+            m_CompilationSub = this
+                .ObservableForProperty(x => x.m_CoreViewModel.GraphCompilation)
+                .ObserveOn(RxApp.TaskpoolScheduler)
+                .Subscribe(_ => SetAsCompiled());
+
+            m_IsCompiled = false;
         }
 
         #endregion
 
         #region Properties
 
-        public IDependentActivity<int, int> DependentActivity { get; }
-
-        public ResourceSelectorViewModel ResourceSelector
+        private ResourceSettingsModel m_ResourceSettings;
+        private ResourceSettingsModel ResourceSettings
         {
-            get;
-            private set;
+            get => m_ResourceSettings;
+            set
+            {
+                m_ResourceSettings = value;
+                SetNewTargetResources();
+            }
         }
+
+        private WorkStreamSettingsModel m_WorkStreamSettings;
+        private WorkStreamSettingsModel WorkStreamSettings
+        {
+            get => m_WorkStreamSettings;
+            set
+            {
+                m_WorkStreamSettings = value;
+                SetNewTargetWorkStreams();
+            }
+        }
+
+        public IDependentActivity DependentActivity { get; }
+
+        public IResourceSelectorViewModel ResourceSelector { get; }
+
+        public IWorkStreamSelectorViewModel WorkStreamSelector { get; }
 
         #endregion
 
         #region Private Methods
 
-        private void PublishManagedActivityUpdatedPayload()
+        private void SetMinimumEarliestStartTimes(int? input)
         {
-            m_EventService.GetEvent<PubSubEvent<ManagedActivityUpdatedPayload>>()
-                .Publish(new ManagedActivityUpdatedPayload());
+            // Calculate integer and DateTimeOffset values (double pass).
+            int? intValue = CalculateTime(input);
+            DateTimeOffset? dateTimeOffsetValue = CalculateDateTime(intValue);
+
+            dateTimeOffsetValue = CalculateDateTime(dateTimeOffsetValue);
+            intValue = CalculateTime(dateTimeOffsetValue);
+
+            // Validate integer value.
+            ValidateMinimumEarliestStartTime(intValue);
+
+            // Set integer and DateTimeOffset values.
+            DependentActivity.MinimumEarliestStartTime = intValue;
+            this.RaisePropertyChanged(nameof(MinimumEarliestStartTime));
+            this.RaiseAndSetIfChanged(ref m_MinimumEarliestStartDateTime, dateTimeOffsetValue, nameof(MinimumEarliestStartDateTime));
+            RefreshStartAndFinishValues();
         }
 
-        private void CalculateMinimumEarliestStartDateTime()
+        private void SetMinimumEarliestStartTimes(DateTimeOffset? input, bool skipValidation = false)
         {
-            int? minimumEarliestStartTime = DependentActivity.MinimumEarliestStartTime;
-            if (minimumEarliestStartTime.HasValue)
+            // Calculate integer and DateTimeOffset values (double pass).
+            DateTimeOffset? dateTimeOffsetValue = CalculateDateTime(input);
+            int? intValue = CalculateTime(dateTimeOffsetValue);
+
+            intValue = CalculateTime(intValue);
+            dateTimeOffsetValue = CalculateDateTime(intValue);
+
+            if (!skipValidation)
             {
-                m_MinimumEarliestStartDateTime = m_DateTimeCalculator.AddDays(ProjectStart, minimumEarliestStartTime.GetValueOrDefault());
+                // Validate integer value.
+                ValidateMinimumEarliestStartTime(intValue);
             }
-            else
+
+            // Set integer and DateTimeOffset values.
+            DependentActivity.MinimumEarliestStartTime = intValue;
+            this.RaisePropertyChanged(nameof(MinimumEarliestStartTime));
+            this.RaiseAndSetIfChanged(ref m_MinimumEarliestStartDateTime, dateTimeOffsetValue, nameof(MinimumEarliestStartDateTime));
+            RefreshStartAndFinishValues();
+        }
+
+        private void SetMaximumLatestFinishTimes(int? input)
+        {
+            // Calculate integer and DateTimeOffset values (double pass).
+            int? intValue = CalculateTime(input);
+            DateTimeOffset? dateTimeOffsetValue = CalculateDateTime(intValue);
+
+            dateTimeOffsetValue = CalculateDateTime(dateTimeOffsetValue);
+            intValue = CalculateTime(dateTimeOffsetValue);
+
+            // Validate integer value.
+            ValidateMaximumLatestFinishTime(intValue);
+
+            // Set integer and DateTimeOffset values.
+            DependentActivity.MaximumLatestFinishTime = intValue;
+            this.RaisePropertyChanged(nameof(MaximumLatestFinishTime));
+            this.RaiseAndSetIfChanged(ref m_MaximumLatestFinishDateTime, dateTimeOffsetValue, nameof(MaximumLatestFinishDateTime));
+            RefreshStartAndFinishValues();
+        }
+
+        private void SetMaximumLatestFinishTimes(DateTimeOffset? input, bool skipValidation = false)
+        {
+            // Calculate integer and DateTimeOffset values (double pass).
+            DateTimeOffset? dateTimeOffsetValue = CalculateDateTime(input);
+            int? intValue = CalculateTime(dateTimeOffsetValue);
+
+            intValue = CalculateTime(intValue);
+            dateTimeOffsetValue = CalculateDateTime(intValue);
+
+            if (!skipValidation)
             {
-                m_MinimumEarliestStartDateTime = null;
+                // Validate integer value.
+                ValidateMaximumLatestFinishTime(intValue);
+            }
+
+            // Set integer and DateTimeOffset values.
+            DependentActivity.MaximumLatestFinishTime = intValue;
+            this.RaisePropertyChanged(nameof(MaximumLatestFinishTime));
+            this.RaiseAndSetIfChanged(ref m_MaximumLatestFinishDateTime, dateTimeOffsetValue, nameof(MaximumLatestFinishDateTime));
+            RefreshStartAndFinishValues();
+        }
+
+        private int? CalculateTime(DateTimeOffset? input)
+        {
+            int? result = null;
+            if (input.HasValue)
+            {
+                result = m_DateTimeCalculator.CountDays(ProjectStart, input.GetValueOrDefault());
+                result = CalculateTime(result);
+            }
+            return result;
+        }
+
+        private static int? CalculateTime(int? input)
+        {
+            int? result = input;
+            if (result.HasValue && result < 0)
+            {
+                result = 0;
+            }
+            return result;
+        }
+
+        private DateTimeOffset? CalculateDateTime(int? input)
+        {
+            DateTimeOffset? result = null;
+            if (input.HasValue)
+            {
+                result = m_DateTimeCalculator.AddDays(ProjectStart, input.GetValueOrDefault());
+                result = CalculateDateTime(result);
+            }
+            return result;
+        }
+
+        private DateTimeOffset? CalculateDateTime(DateTimeOffset? input)
+        {
+            DateTimeOffset? result = input;
+            if (result.HasValue)
+            {
+                if (result < ProjectStart)
+                {
+                    result = ProjectStart.DateTime;
+                }
+                result = new DateTimeOffset(result.GetValueOrDefault().Date + ProjectStart.TimeOfDay, ProjectStartTimeOffset);
+            }
+            return result;
+        }
+
+        private void ValidateDuration(int input)
+        {
+            Validate(MinimumFreeSlack, MinimumEarliestStartTime, MaximumLatestFinishTime, input);
+        }
+
+        private void ValidateMinimumFreeSlack(int? input)
+        {
+            Validate(input, MinimumEarliestStartTime, MaximumLatestFinishTime, Duration);
+        }
+
+        private void ValidateMinimumEarliestStartTime(int? input)
+        {
+            Validate(MinimumFreeSlack, input, MaximumLatestFinishTime, Duration);
+        }
+
+        private void ValidateMaximumLatestFinishTime(int? input)
+        {
+            Validate(MinimumFreeSlack, MinimumEarliestStartTime, input, Duration);
+        }
+
+        private void Validate(
+            int? minimumFreeSlack,
+            int? minimumEarliestStartTime,
+            int? maximumLatestFinishTime,
+            int duration)
+        {
+            ClearErrors(nameof(Duration));
+            ClearErrors(nameof(MinimumFreeSlack));
+            ClearErrors(nameof(MinimumEarliestStartTime));
+            ClearErrors(nameof(MinimumEarliestStartDateTime));
+            ClearErrors(nameof(MaximumLatestFinishTime));
+            ClearErrors(nameof(MaximumLatestFinishDateTime));
+
+            {
+                string? errorMessage = ConstraintsValidationRule.ValidateDuration(minimumEarliestStartTime, maximumLatestFinishTime, duration);
+                if (errorMessage is not null)
+                {
+                    SetError(nameof(Duration), errorMessage);
+                    SetError(nameof(MinimumEarliestStartTime), errorMessage);
+                    SetError(nameof(MinimumEarliestStartDateTime), errorMessage);
+                    SetError(nameof(MaximumLatestFinishTime), errorMessage);
+                    SetError(nameof(MaximumLatestFinishDateTime), errorMessage);
+                }
+            }
+
+            {
+                string? errorMessage = ConstraintsValidationRule.ValidateMinimumFreeSlack(minimumFreeSlack, minimumEarliestStartTime, maximumLatestFinishTime);
+                if (errorMessage is not null)
+                {
+                    SetError(nameof(MinimumFreeSlack), errorMessage);
+                    SetError(nameof(MinimumEarliestStartTime), errorMessage);
+                    SetError(nameof(MinimumEarliestStartDateTime), errorMessage);
+                    SetError(nameof(MaximumLatestFinishTime), errorMessage);
+                    SetError(nameof(MaximumLatestFinishDateTime), errorMessage);
+                }
             }
         }
 
-        private void CalculateMinimumEarliestStartTime()
-        {
-            DateTime? minimumEarliestStartDateTime = m_MinimumEarliestStartDateTime;
-            if (minimumEarliestStartDateTime.HasValue)
-            {
-                DependentActivity.MinimumEarliestStartTime = m_DateTimeCalculator.CountDays(ProjectStart, minimumEarliestStartDateTime.GetValueOrDefault());
-            }
-            else
-            {
-                DependentActivity.MinimumEarliestStartTime = null;
-            }
-        }
-
-        private void CalculateMaximumLatestFinishDateTime()
-        {
-            int? maximumLatestFinishTime = DependentActivity.MaximumLatestFinishTime;
-            if (maximumLatestFinishTime.HasValue)
-            {
-                m_MaximumLatestFinishDateTime = m_DateTimeCalculator.AddDays(ProjectStart, maximumLatestFinishTime.GetValueOrDefault());
-            }
-            else
-            {
-                m_MaximumLatestFinishDateTime = null;
-            }
-        }
-
-        private void CalculateMaximumLatestFinishTime()
-        {
-            DateTime? maximumLatestFinishDateTime = m_MaximumLatestFinishDateTime;
-            if (maximumLatestFinishDateTime.HasValue)
-            {
-                DependentActivity.MaximumLatestFinishTime = m_DateTimeCalculator.CountDays(ProjectStart, maximumLatestFinishDateTime.GetValueOrDefault());
-            }
-            else
-            {
-                DependentActivity.MaximumLatestFinishTime = null;
-            }
-        }
-
-        private void UpdateTargetResources()
+        private void UpdateActivityTargetResources()
         {
             DependentActivity.TargetResources.Clear();
             DependentActivity.TargetResources.UnionWith(ResourceSelector.SelectedResourceIds);
-            RaisePropertyChanged(nameof(TargetResources));
-            RaisePropertyChanged(nameof(ResourceSelector));
+            this.RaisePropertyChanged(nameof(TargetResources));
+            this.RaisePropertyChanged(nameof(ResourceSelector));
+            this.RaisePropertyChanged(nameof(AllocatedToResourcesString));
+        }
+
+        private void SetNewTargetResources()
+        {
+            UpdateActivityTargetResources();
+            RefreshResourceSelector();
+            UpdateActivityTargetResources();
+        }
+
+        private void RefreshResourceSelector()
+        {
+            var selectedTargetResources = new HashSet<int>(DependentActivity.TargetResources);
+
+            IEnumerable<TargetResourceModel> targetResources = ResourceSettings
+                .Resources.Select(
+                    x => new TargetResourceModel
+                    {
+                        Id = x.Id,
+                        Name = x.Name,
+                    });
+
+            ResourceSelector.SetTargetResources(targetResources, selectedTargetResources);
+        }
+
+        private void UpdateActivityTargetWorkStreams()
+        {
+            DependentActivity.TargetWorkStreams.Clear();
+            DependentActivity.TargetWorkStreams.UnionWith(WorkStreamSelector.SelectedWorkStreamIds);
+            this.RaisePropertyChanged(nameof(TargetWorkStreams));
+            this.RaisePropertyChanged(nameof(WorkStreamSelector));
+        }
+
+        private void SetNewTargetWorkStreams()
+        {
+            UpdateActivityTargetWorkStreams();
+            RefreshWorkStreamSelector();
+            UpdateActivityTargetWorkStreams();
+        }
+
+        private void RefreshWorkStreamSelector()
+        {
+            var selectedTargetWorkStreams = new HashSet<int>(DependentActivity.TargetWorkStreams);
+
+            IEnumerable<TargetWorkStreamModel> targetWorkStreams = WorkStreamSettings
+                .WorkStreams.Select(
+                    x => new TargetWorkStreamModel
+                    {
+                        Id = x.Id,
+                        Name = x.Name,
+                        IsPhase = x.IsPhase,
+                    });
+
+            WorkStreamSelector.SetTargetWorkStreams(targetWorkStreams, selectedTargetWorkStreams);
+        }
+
+        private void UpdateEarliestStartAndLatestFinishDateTimes()
+        {
+            RefreshStartAndFinishValues();
+            SetMinimumEarliestStartTimes(m_MinimumEarliestStartDateTime, skipValidation: true);
+            SetMaximumLatestFinishTimes(m_MaximumLatestFinishDateTime, skipValidation: true);
+        }
+
+        private void RefreshStartAndFinishValues()
+        {
+            this.RaisePropertyChanged(nameof(EarliestStartTime));
+            this.RaisePropertyChanged(nameof(LatestStartTime));
+            this.RaisePropertyChanged(nameof(EarliestFinishTime));
+            this.RaisePropertyChanged(nameof(LatestFinishTime));
+            this.RaisePropertyChanged(nameof(EarliestStartDateTimeOffset));
+            this.RaisePropertyChanged(nameof(LatestStartDateTimeOffset));
+            this.RaisePropertyChanged(nameof(EarliestFinishDateTimeOffset));
+            this.RaisePropertyChanged(nameof(LatestFinishDateTimeOffset));
+            this.RaisePropertyChanged(nameof(MinimumEarliestStartTime));
+            this.RaisePropertyChanged(nameof(MinimumEarliestStartDateTime));
+            this.RaisePropertyChanged(nameof(MaximumLatestFinishTime));
+            this.RaisePropertyChanged(nameof(MaximumLatestFinishDateTime));
+        }
+
+        private void SetAsCompiled()
+        {
+            m_IsCompiled = true;
+            this.RaisePropertyChanged(nameof(AllocatedToResourcesString));
+        }
+
+        private void SetError(string propertyName, string error)
+        {
+            if (m_ErrorsByPropertyName.TryGetValue(propertyName, out List<string>? errorList))
+            {
+                if (!errorList.Contains(error))
+                {
+                    errorList.Add(error);
+                }
+            }
+            else
+            {
+                m_ErrorsByPropertyName.Add(propertyName, [error]);
+            }
+            ErrorsChanged?.Invoke(this, new DataErrorsChangedEventArgs(propertyName));
+            this.RaisePropertyChanged(nameof(HasErrors));
+        }
+
+        private void ClearErrors(string? propertyName)
+        {
+            if (!string.IsNullOrWhiteSpace(propertyName)
+                && m_ErrorsByPropertyName.TryGetValue(propertyName, out List<string>? errorList))
+            {
+                errorList.Clear();
+            }
+            ErrorsChanged?.Invoke(this, new DataErrorsChangedEventArgs(propertyName));
+        }
+
+        private void ClearErrors()
+        {
+            IList<string> propertyNames = [.. m_ErrorsByPropertyName.Keys];
+            m_ErrorsByPropertyName.Clear();
+
+            foreach (string propertyName in propertyNames)
+            {
+                ErrorsChanged?.Invoke(this, new DataErrorsChangedEventArgs(propertyName));
+            }
+
+            this.RaisePropertyChanged(nameof(HasErrors));
         }
 
         #endregion
 
         #region IManagedActivityViewModel Members
 
-        public DateTime ProjectStart
+        private bool m_IsCompiled;
+        public bool IsCompiled
         {
-            get
+            get => m_IsCompiled;
+            private set
             {
-                return m_ProjectStart;
-            }
-            set
-            {
-                m_ProjectStart = value;
-                RaisePropertyChanged();
-                RaisePropertyChanged(nameof(EarliestStartDateTime));
-                RaisePropertyChanged(nameof(LatestStartDateTime));
-                RaisePropertyChanged(nameof(EarliestFinishDateTime));
-                RaisePropertyChanged(nameof(LatestFinishDateTime));
-                CalculateMinimumEarliestStartTime();
-                RaisePropertyChanged(nameof(MinimumEarliestStartTime));
-                CalculateMaximumLatestFinishTime();
-                RaisePropertyChanged(nameof(MaximumLatestFinishTime));
+                m_IsCompiled = value;
+                this.RaisePropertyChanged();
+                this.RaisePropertyChanged(nameof(AllocatedToResourcesString));
             }
         }
+
+        private readonly ObservableAsPropertyHelper<bool> m_ShowDates;
+        public bool ShowDates => m_ShowDates.Value;
+
+        private DateTimeOffset m_ProjectStart;
+        public DateTimeOffset ProjectStart
+        {
+            get => m_ProjectStart;
+            set
+            {
+                this.RaiseAndSetIfChanged(ref m_ProjectStart, value);
+                RefreshStartAndFinishValues();
+                //this.RaisePropertyChanged(nameof(EarliestStartDateTimeOffset));
+                //this.RaisePropertyChanged(nameof(LatestStartDateTimeOffset));
+                //this.RaisePropertyChanged(nameof(EarliestFinishDateTimeOffset));
+                //this.RaisePropertyChanged(nameof(LatestFinishDateTimeOffset));
+                SetMinimumEarliestStartTimes(m_MinimumEarliestStartDateTime);
+                SetMaximumLatestFinishTimes(m_MaximumLatestFinishDateTime);
+            }
+        }
+
+        public TimeSpan ProjectStartTimeOffset => m_ProjectStart.Offset;
 
         public string DependenciesString
         {
-            get
-            {
-                return string.Join(DependenciesStringValidationRule.Separator, Dependencies.OrderBy(x => x));
-            }
+            get => string.Join(DependenciesStringValidationRule.Separator, Dependencies.OrderBy(x => x));
             set
             {
-                string stripped = DependenciesStringValidationRule.StripWhitespace(value);
-                IList<int> updatedDependencies = DependenciesStringValidationRule.Parse(stripped);
-                UpdatedDependencies.Clear();
-                UpdatedDependencies.UnionWith(updatedDependencies);
-                HasUpdatedDependencies = true;
-                RaisePropertyChanged();
-            }
-        }
+                //ClearErrors();
+                (IEnumerable<int>? updatedDependencies, string? errorMessage) = DependenciesStringValidationRule.Validate(value, Id);
+                //if (errorMessage is not null)
+                //{
+                //    SetError(nameof(DependenciesString), errorMessage);
+                //}
 
-        public HashSet<int> UpdatedDependencies
-        {
-            get;
-        }
-
-        public bool HasUpdatedDependencies
-        {
-            get
-            {
-                return m_HasUpdatedDependencies;
-            }
-            set
-            {
-                m_HasUpdatedDependencies = value;
-                RaisePropertyChanged();
-                RaisePropertyChanged(nameof(Dependencies));
-                RaisePropertyChanged(nameof(DependenciesString));
+                if (updatedDependencies is not null)
+                {
+                    m_VertexGraphCompiler.SetActivityDependencies(Id, new HashSet<int>(updatedDependencies));
+                }
+                this.RaisePropertyChanged();
+                this.RaisePropertyChanged(nameof(Dependencies));
             }
         }
 
@@ -227,42 +547,35 @@ namespace Zametek.ViewModel.ProjectPlan
 
         public string Name
         {
-            get
-            {
-                return DependentActivity.Name;
-            }
+            get => DependentActivity.Name;
             set
             {
                 DependentActivity.Name = value;
-                RaisePropertyChanged();
+                this.RaisePropertyChanged();
             }
         }
 
         public string Notes
         {
-            get
-            {
-                return DependentActivity.Notes;
-            }
+            get => DependentActivity.Notes;
             set
             {
                 DependentActivity.Notes = value;
-                RaisePropertyChanged();
+                this.RaisePropertyChanged();
             }
         }
+
+        public HashSet<int> TargetWorkStreams => DependentActivity.TargetWorkStreams;
 
         public HashSet<int> TargetResources => DependentActivity.TargetResources;
 
         public LogicalOperator TargetResourceOperator
         {
-            get
-            {
-                return DependentActivity.TargetResourceOperator;
-            }
+            get => DependentActivity.TargetResourceOperator;
             set
             {
                 DependentActivity.TargetResourceOperator = value;
-                RaisePropertyChanged();
+                this.RaisePropertyChanged();
             }
         }
 
@@ -272,10 +585,8 @@ namespace Zametek.ViewModel.ProjectPlan
         {
             get
             {
-                return string.Join(DependenciesStringValidationRule.Separator, ResourceSelector
-                    .TargetResources.Where(x => AllocatedToResources.Contains(x.Id))
-                    .OrderBy(x => x.Id)
-                    .Select(x => x.DisplayName));
+                HashSet<int> allocatedToResources = AllocatedToResources;
+                return ResourceSelector.GetAllocatedToResourcesString(allocatedToResources);
             }
         }
 
@@ -283,41 +594,41 @@ namespace Zametek.ViewModel.ProjectPlan
 
         public bool HasNoCost
         {
-            get
-            {
-                return DependentActivity.HasNoCost;
-            }
+            get => DependentActivity.HasNoCost;
             set
             {
-                BeginEdit();
-                DependentActivity.HasNoCost = value;
-                EndEdit();
-                RaisePropertyChanged();
+                if (DependentActivity.HasNoCost != value)
+                {
+                    BeginEdit();
+                    DependentActivity.HasNoCost = value;
+                    EndEdit();
+                }
+                this.RaisePropertyChanged();
             }
         }
 
         public int Duration
         {
-            get
-            {
-                return DependentActivity.Duration;
-            }
+            get => DependentActivity.Duration;
             set
             {
                 if (value < 0)
                 {
                     value = 0;
                 }
+
+                ValidateDuration(value);
+
                 DependentActivity.Duration = value;
-                RaisePropertyChanged();
-                RaisePropertyChanged(nameof(IsDummy));
-                RaisePropertyChanged(nameof(IsCritical));
-                RaisePropertyChanged(nameof(EarliestFinishTime));
-                RaisePropertyChanged(nameof(EarliestFinishDateTime));
-                RaisePropertyChanged(nameof(LatestStartTime));
-                RaisePropertyChanged(nameof(LatestStartDateTime));
-                RaisePropertyChanged(nameof(TotalSlack));
-                RaisePropertyChanged(nameof(InterferingSlack));
+                this.RaisePropertyChanged();
+                this.RaisePropertyChanged(nameof(IsDummy));
+                this.RaisePropertyChanged(nameof(IsCritical));
+                this.RaisePropertyChanged(nameof(EarliestFinishTime));
+                this.RaisePropertyChanged(nameof(EarliestFinishDateTimeOffset));
+                this.RaisePropertyChanged(nameof(LatestStartTime));
+                this.RaisePropertyChanged(nameof(LatestStartDateTimeOffset));
+                this.RaisePropertyChanged(nameof(TotalSlack));
+                this.RaisePropertyChanged(nameof(InterferingSlack));
             }
         }
 
@@ -325,17 +636,14 @@ namespace Zametek.ViewModel.ProjectPlan
 
         public int? FreeSlack
         {
-            get
-            {
-                return DependentActivity.FreeSlack;
-            }
+            get => DependentActivity.FreeSlack;
             set
             {
                 DependentActivity.FreeSlack = value;
-                RaisePropertyChanged();
-                RaisePropertyChanged(nameof(InterferingSlack));
-                RaisePropertyChanged(nameof(DependenciesString));
-                RaisePropertyChanged(nameof(ResourceDependenciesString));
+                this.RaisePropertyChanged();
+                this.RaisePropertyChanged(nameof(InterferingSlack));
+                this.RaisePropertyChanged(nameof(DependenciesString));
+                this.RaisePropertyChanged(nameof(ResourceDependenciesString));
             }
         }
 
@@ -345,32 +653,44 @@ namespace Zametek.ViewModel.ProjectPlan
 
         public int? EarliestStartTime
         {
-            get
-            {
-                return DependentActivity.EarliestStartTime;
-            }
+            get => DependentActivity.EarliestStartTime;
             set
             {
                 DependentActivity.EarliestStartTime = value;
-                RaisePropertyChanged();
-                RaisePropertyChanged(nameof(EarliestStartDateTime));
-                RaisePropertyChanged(nameof(EarliestFinishTime));
-                RaisePropertyChanged(nameof(EarliestFinishDateTime));
-                RaisePropertyChanged(nameof(TotalSlack));
-                RaisePropertyChanged(nameof(IsCritical));
-                RaisePropertyChanged(nameof(InterferingSlack));
-                RaisePropertyChanged(nameof(DependenciesString));
-                RaisePropertyChanged(nameof(ResourceDependenciesString));
+                this.RaisePropertyChanged();
+                this.RaisePropertyChanged(nameof(EarliestStartDateTimeOffset));
+                this.RaisePropertyChanged(nameof(EarliestFinishTime));
+                this.RaisePropertyChanged(nameof(EarliestFinishDateTimeOffset));
+                this.RaisePropertyChanged(nameof(TotalSlack));
+                this.RaisePropertyChanged(nameof(IsCritical));
+                this.RaisePropertyChanged(nameof(InterferingSlack));
+                this.RaisePropertyChanged(nameof(DependenciesString));
+                this.RaisePropertyChanged(nameof(ResourceDependenciesString));
             }
         }
 
-        public DateTime? EarliestStartDateTime
+        public DateTimeOffset? EarliestStartDateTimeOffset
         {
             get
             {
                 if (EarliestStartTime.HasValue)
                 {
-                    return m_DateTimeCalculator.AddDays(ProjectStart, EarliestStartTime.GetValueOrDefault());
+                    if (MinimumEarliestStartDateTime.HasValue)
+                    {
+                        return m_DateTimeCalculator.DisplayEarliestStartDate(
+                            MinimumEarliestStartDateTime.GetValueOrDefault(),
+                            m_DateTimeCalculator.AddDays(
+                                ProjectStart,
+                                EarliestStartTime.GetValueOrDefault()),
+                            Duration);
+                    }
+
+                    return m_DateTimeCalculator.DisplayEarliestStartDate(
+                        ProjectStart,
+                        m_DateTimeCalculator.AddDays(
+                            ProjectStart,
+                            EarliestStartTime.GetValueOrDefault()),
+                        Duration);
                 }
                 return null;
             }
@@ -378,13 +698,18 @@ namespace Zametek.ViewModel.ProjectPlan
 
         public int? LatestStartTime => DependentActivity.LatestStartTime;
 
-        public DateTime? LatestStartDateTime
+        public DateTimeOffset? LatestStartDateTimeOffset
         {
             get
             {
                 if (LatestStartTime.HasValue)
                 {
-                    return m_DateTimeCalculator.AddDays(ProjectStart, LatestStartTime.GetValueOrDefault());
+                    return m_DateTimeCalculator.DisplayLatestStartDate(
+                        EarliestStartDateTimeOffset.GetValueOrDefault(),
+                        m_DateTimeCalculator.AddDays(
+                            ProjectStart,
+                            LatestStartTime.GetValueOrDefault()),
+                        Duration);
                 }
                 return null;
             }
@@ -392,13 +717,18 @@ namespace Zametek.ViewModel.ProjectPlan
 
         public int? EarliestFinishTime => DependentActivity.EarliestFinishTime;
 
-        public DateTime? EarliestFinishDateTime
+        public DateTimeOffset? EarliestFinishDateTimeOffset
         {
             get
             {
                 if (EarliestFinishTime.HasValue)
                 {
-                    return m_DateTimeCalculator.AddDays(ProjectStart, EarliestFinishTime.GetValueOrDefault());
+                    return m_DateTimeCalculator.DisplayFinishDate(
+                        EarliestStartDateTimeOffset.GetValueOrDefault(),
+                        m_DateTimeCalculator.AddDays(
+                            ProjectStart,
+                            EarliestFinishTime.GetValueOrDefault()),
+                        Duration);
                 }
                 return null;
             }
@@ -406,32 +736,34 @@ namespace Zametek.ViewModel.ProjectPlan
 
         public int? LatestFinishTime
         {
-            get
-            {
-                return DependentActivity.LatestFinishTime;
-            }
+            get => DependentActivity.LatestFinishTime;
             set
             {
                 DependentActivity.LatestFinishTime = value;
-                RaisePropertyChanged();
-                RaisePropertyChanged(nameof(LatestFinishDateTime));
-                RaisePropertyChanged(nameof(LatestStartTime));
-                RaisePropertyChanged(nameof(LatestStartDateTime));
-                RaisePropertyChanged(nameof(TotalSlack));
-                RaisePropertyChanged(nameof(IsCritical));
-                RaisePropertyChanged(nameof(InterferingSlack));
-                RaisePropertyChanged(nameof(DependenciesString));
-                RaisePropertyChanged(nameof(ResourceDependenciesString));
+                this.RaisePropertyChanged();
+                this.RaisePropertyChanged(nameof(LatestFinishDateTimeOffset));
+                this.RaisePropertyChanged(nameof(LatestStartTime));
+                this.RaisePropertyChanged(nameof(LatestStartDateTimeOffset));
+                this.RaisePropertyChanged(nameof(TotalSlack));
+                this.RaisePropertyChanged(nameof(IsCritical));
+                this.RaisePropertyChanged(nameof(InterferingSlack));
+                this.RaisePropertyChanged(nameof(DependenciesString));
+                this.RaisePropertyChanged(nameof(ResourceDependenciesString));
             }
         }
 
-        public DateTime? LatestFinishDateTime
+        public DateTimeOffset? LatestFinishDateTimeOffset
         {
             get
             {
                 if (LatestFinishTime.HasValue)
                 {
-                    return m_DateTimeCalculator.AddDays(ProjectStart, LatestFinishTime.GetValueOrDefault());
+                    return m_DateTimeCalculator.DisplayFinishDate(
+                        LatestStartDateTimeOffset.GetValueOrDefault(),
+                        m_DateTimeCalculator.AddDays(
+                            ProjectStart,
+                            LatestFinishTime.GetValueOrDefault()),
+                        Duration);
                 }
                 return null;
             }
@@ -439,139 +771,76 @@ namespace Zametek.ViewModel.ProjectPlan
 
         public int? MinimumFreeSlack
         {
-            get
-            {
-                return DependentActivity.MinimumFreeSlack;
-            }
+            get => DependentActivity.MinimumFreeSlack;
             set
             {
-                if (value < 0)
+                if (value.HasValue && value < 0)
                 {
                     value = 0;
                 }
+
+                ValidateMinimumFreeSlack(value);
+
                 DependentActivity.MinimumFreeSlack = value;
-                RaisePropertyChanged();
+                this.RaisePropertyChanged();
             }
         }
 
         public int? MinimumEarliestStartTime
         {
-            get
-            {
-                return DependentActivity.MinimumEarliestStartTime;
-            }
-            set
-            {
-                if (value < 0)
-                {
-                    value = 0;
-                }
-                DependentActivity.MinimumEarliestStartTime = value;
-                RaisePropertyChanged();
-                CalculateMinimumEarliestStartDateTime();
-                RaisePropertyChanged(nameof(MinimumEarliestStartDateTime));
-            }
+            get => DependentActivity.MinimumEarliestStartTime;
+            set => SetMinimumEarliestStartTimes(value);
         }
 
         public DateTime? MinimumEarliestStartDateTime
         {
-            get
-            {
-                return m_MinimumEarliestStartDateTime;
-            }
-            set
-            {
-                if (value.HasValue)
-                {
-                    if (value < ProjectStart)
-                    {
-                        value = ProjectStart;
-                    }
-                    value = value.GetValueOrDefault().Date + ProjectStart.TimeOfDay;
-                }
-                m_MinimumEarliestStartDateTime = value;
-                RaisePropertyChanged();
-                CalculateMinimumEarliestStartTime();
-                RaisePropertyChanged(nameof(MinimumEarliestStartTime));
-            }
+            get => m_MinimumEarliestStartDateTime?.DateTime;
+            set => SetMinimumEarliestStartTimes(value);
         }
 
         public int? MaximumLatestFinishTime
         {
-            get
-            {
-                return DependentActivity.MaximumLatestFinishTime;
-            }
-            set
-            {
-                if (value < 0)
-                {
-                    value = 0;
-                }
-                DependentActivity.MaximumLatestFinishTime = value;
-                RaisePropertyChanged();
-                CalculateMaximumLatestFinishDateTime();
-                RaisePropertyChanged(nameof(MaximumLatestFinishDateTime));
-            }
+            get => DependentActivity.MaximumLatestFinishTime;
+            set => SetMaximumLatestFinishTimes(value);
         }
 
         public DateTime? MaximumLatestFinishDateTime
         {
             get
             {
-                return m_MaximumLatestFinishDateTime;
+                if (m_MaximumLatestFinishDateTime.HasValue)
+                {
+                    return m_DateTimeCalculator.MaximumLatestFinishDateOut(
+                        EarliestStartDateTimeOffset.GetValueOrDefault(),
+                        m_MaximumLatestFinishDateTime.GetValueOrDefault(),
+                        Duration).DateTime;
+                }
+
+                return null;
             }
             set
             {
-                if (value.HasValue)
+                DateTimeOffset? input = value;
+
+                if (input.HasValue)
                 {
-                    if (value < ProjectStart)
-                    {
-                        value = ProjectStart;
-                    }
-                    value = value.GetValueOrDefault().Date + ProjectStart.TimeOfDay;
+                    input = m_DateTimeCalculator.MaximumLatestFinishDateIn(
+                        EarliestStartDateTimeOffset.GetValueOrDefault(),
+                        input.GetValueOrDefault(),
+                        Duration);
                 }
-                m_MaximumLatestFinishDateTime = value;
-                RaisePropertyChanged();
-                CalculateMaximumLatestFinishTime();
-                RaisePropertyChanged(nameof(MaximumLatestFinishTime));
+
+                SetMaximumLatestFinishTimes(input);
             }
         }
+
+        public IActivityTrackerSetViewModel TrackerSet { get; }
+
+        public List<ActivityTrackerModel> Trackers => TrackerSet.Trackers;
 
         public HashSet<int> Dependencies => DependentActivity.Dependencies;
 
         public HashSet<int> ResourceDependencies => DependentActivity.ResourceDependencies;
-
-        public void UseBusinessDays(bool useBusinessDays)
-        {
-            m_DateTimeCalculator.UseBusinessDays(useBusinessDays);
-            RaisePropertyChanged(nameof(EarliestStartDateTime));
-            RaisePropertyChanged(nameof(LatestStartDateTime));
-            RaisePropertyChanged(nameof(EarliestFinishDateTime));
-            RaisePropertyChanged(nameof(LatestFinishDateTime));
-            CalculateMinimumEarliestStartTime();
-            RaisePropertyChanged(nameof(MinimumEarliestStartTime));
-            CalculateMaximumLatestFinishTime();
-            RaisePropertyChanged(nameof(MaximumLatestFinishTime));
-
-        }
-
-        public void SetTargetResources(IEnumerable<ResourceModel> targetResources)
-        {
-            if (targetResources == null)
-            {
-                throw new ArgumentNullException(nameof(targetResources));
-            }
-            UpdateTargetResources();
-            var selectedTargetResources = new HashSet<int>(DependentActivity.TargetResources.ToList());
-            ResourceSelector.SetTargetResources(targetResources, selectedTargetResources);
-            UpdateTargetResources();
-        }
-
-        public void UpdateAllocatedToResources()
-        {
-            RaisePropertyChanged(nameof(AllocatedToResourcesString));
-        }
 
         public void SetAsReadOnly()
         {
@@ -585,7 +854,10 @@ namespace Zametek.ViewModel.ProjectPlan
 
         public object CloneObject()
         {
-            return DependentActivity.CloneObject();
+            var activity = (IDependentActivity)DependentActivity.CloneObject();
+            activity.Trackers.Clear();
+            activity.Trackers.AddRange(Trackers);
+            return activity;
         }
 
         #endregion
@@ -607,8 +879,11 @@ namespace Zametek.ViewModel.ProjectPlan
             if (m_isDirty)
             {
                 m_isDirty = false;
-                UpdateTargetResources();
-                PublishManagedActivityUpdatedPayload();
+                UpdateActivityTargetResources();
+                UpdateActivityTargetWorkStreams();
+                TrackerSet.RefreshIndex();
+                m_CoreViewModel.IsProjectUpdated = true;
+                IsCompiled = false;
             }
         }
 
@@ -616,6 +891,73 @@ namespace Zametek.ViewModel.ProjectPlan
         {
             m_isDirty = false;
         }
+
+        #endregion
+
+        #region IKillSubscriptions Members
+
+        public void KillSubscriptions()
+        {
+            m_ProjectStartSub?.Dispose();
+            m_ResourceSettingsSub?.Dispose();
+            m_WorkStreamSettingsSub?.Dispose();
+            m_DateTimeCalculatorCalculatorModeSub?.Dispose();
+            m_DateTimeCalculatorDisplayModeSub?.Dispose();
+            m_CompilationSub?.Dispose();
+        }
+
+        #endregion
+
+        #region IDisposable Members
+
+        private bool m_Disposed = false;
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (m_Disposed)
+            {
+                return;
+            }
+
+            if (disposing)
+            {
+                // TODO: dispose managed state (managed objects).
+                KillSubscriptions();
+                TrackerSet.Dispose();
+                m_ShowDates?.Dispose();
+            }
+
+            // TODO: free unmanaged resources (unmanaged objects) and override a finalizer below.
+            // TODO: set large fields to null.
+
+            m_Disposed = true;
+        }
+
+        public void Dispose()
+        {
+            // Dispose of unmanaged resources.
+            Dispose(true);
+            // Suppress finalization.
+            GC.SuppressFinalize(this);
+        }
+
+        #endregion
+
+        #region INotifyDataErrorInfo Members
+
+        public bool HasErrors => m_ErrorsByPropertyName.Count != 0;
+
+        public IEnumerable GetErrors(string? propertyName)
+        {
+            if (!string.IsNullOrWhiteSpace(propertyName)
+                && m_ErrorsByPropertyName.TryGetValue(propertyName, out List<string>? errorList))
+            {
+                return errorList;
+            }
+            return s_NoErrors;
+        }
+
+        public event EventHandler<DataErrorsChangedEventArgs>? ErrorsChanged;
 
         #endregion
     }

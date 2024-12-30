@@ -1,47 +1,60 @@
-﻿using OxyPlot;
+﻿using Avalonia;
+using OxyPlot;
 using OxyPlot.Axes;
+using OxyPlot.Legends;
 using OxyPlot.Series;
-using Prism;
-using Prism.Commands;
-using Prism.Events;
-using Prism.Interactivity.InteractionRequest;
-using System;
-using System.Collections.Generic;
+using ReactiveUI;
 using System.Data;
-using System.Linq;
-using System.Threading.Tasks;
+using System.Reactive;
+using System.Reactive.Linq;
 using System.Windows.Input;
-using System.Windows.Media.Imaging;
 using Zametek.Common.ProjectPlan;
 using Zametek.Contract.ProjectPlan;
-using Zametek.Event.ProjectPlan;
-using Zametek.Maths.Graphs;
+using Zametek.Utility;
 
 namespace Zametek.ViewModel.ProjectPlan
 {
     public class ResourceChartManagerViewModel
-        : PropertyChangedPubSubViewModel, IResourceChartManagerViewModel, IActiveAware
+        : ToolViewModelBase, IResourceChartManagerViewModel, IDisposable
     {
         #region Fields
 
         private readonly object m_Lock;
 
-        private bool m_ExportResourceChartAsCosts;
-        private PlotModel m_ResourceChartPlotModel;
-        private int m_ResourceChartOutputWidth;
-        private int m_ResourceChartOutputHeight;
+        private static readonly IList<IFileFilter> s_ExportFileFilters =
+            [
+                new FileFilter
+                {
+                    Name = Resource.ProjectPlan.Filters.Filter_ImageJpegFileType,
+                    Patterns =
+                    [
+                        Resource.ProjectPlan.Filters.Filter_ImageJpegFilePattern
+                    ]
+                },
+                new FileFilter
+                {
+                    Name = Resource.ProjectPlan.Filters.Filter_ImagePngFileType,
+                    Patterns =
+                    [
+                        Resource.ProjectPlan.Filters.Filter_ImagePngFilePattern
+                    ]
+                },
+                new FileFilter
+                {
+                    Name = Resource.ProjectPlan.Filters.Filter_PdfFileType,
+                    Patterns =
+                    [
+                        Resource.ProjectPlan.Filters.Filter_PdfFilePattern
+                    ]
+                }
+            ];
 
         private readonly ICoreViewModel m_CoreViewModel;
-        private readonly IFileDialogService m_FileDialogService;
         private readonly ISettingService m_SettingService;
+        private readonly IDialogService m_DialogService;
         private readonly IDateTimeCalculator m_DateTimeCalculator;
-        private readonly IEventAggregator m_EventService;
 
-        private readonly InteractionRequest<Notification> m_NotificationInteractionRequest;
-
-        private SubscriptionToken m_GraphCompilationUpdatedSubscriptionToken;
-
-        private bool m_IsActive;
+        private readonly IDisposable? m_BuildResourceChartPlotModelSub;
 
         #endregion
 
@@ -49,413 +62,56 @@ namespace Zametek.ViewModel.ProjectPlan
 
         public ResourceChartManagerViewModel(
             ICoreViewModel coreViewModel,
-            IFileDialogService fileDialogService,
             ISettingService settingService,
-            IDateTimeCalculator dateTimeCalculator,
-            IEventAggregator eventService)
-            : base(eventService)
+            IDialogService dialogService,
+            IDateTimeCalculator dateTimeCalculator)
         {
+            ArgumentNullException.ThrowIfNull(coreViewModel);
+            ArgumentNullException.ThrowIfNull(settingService);
+            ArgumentNullException.ThrowIfNull(dialogService);
+            ArgumentNullException.ThrowIfNull(dateTimeCalculator);
             m_Lock = new object();
-            m_CoreViewModel = coreViewModel ?? throw new ArgumentNullException(nameof(coreViewModel));
-            m_FileDialogService = fileDialogService ?? throw new ArgumentNullException(nameof(fileDialogService));
-            m_SettingService = settingService ?? throw new ArgumentNullException(nameof(settingService));
-            m_DateTimeCalculator = dateTimeCalculator ?? throw new ArgumentNullException(nameof(dateTimeCalculator));
-            m_EventService = eventService ?? throw new ArgumentNullException(nameof(eventService));
+            m_CoreViewModel = coreViewModel;
+            m_SettingService = settingService;
+            m_DialogService = dialogService;
+            m_DateTimeCalculator = dateTimeCalculator;
+            m_ResourceChartPlotModel = new PlotModel();
 
-            m_NotificationInteractionRequest = new InteractionRequest<Notification>();
+            {
+                ReactiveCommand<Unit, Unit> saveResourceChartImageFileCommand = ReactiveCommand.CreateFromTask(SaveResourceChartImageFileAsync);
+                SaveResourceChartImageFileCommand = saveResourceChartImageFileCommand;
+            }
 
-            ResourceChartPlotModel = null;
-            ResourceChartOutputWidth = 1000;
-            ResourceChartOutputHeight = 500;
+            m_IsBusy = this
+                .WhenAnyValue(rcm => rcm.m_CoreViewModel.IsBusy)
+                .ToProperty(this, rcm => rcm.IsBusy);
 
-            InitializeCommands();
-            SubscribeToEvents();
+            m_HasStaleOutputs = this
+                .WhenAnyValue(rcm => rcm.m_CoreViewModel.HasStaleOutputs)
+                .ToProperty(this, rcm => rcm.HasStaleOutputs);
 
-            SubscribePropertyChanged(m_CoreViewModel, nameof(m_CoreViewModel.IsBusy), nameof(IsBusy), ThreadOption.BackgroundThread);
-            SubscribePropertyChanged(m_CoreViewModel, nameof(m_CoreViewModel.HasStaleOutputs), nameof(HasStaleOutputs), ThreadOption.BackgroundThread);
+            m_HasCompilationErrors = this
+                .WhenAnyValue(rcm => rcm.m_CoreViewModel.HasCompilationErrors)
+                .ToProperty(this, rcm => rcm.HasCompilationErrors);
+
+            m_BuildResourceChartPlotModelSub = this
+                .WhenAnyValue(
+                    rcm => rcm.m_CoreViewModel.ResourceSeriesSet,
+                    rcm => rcm.m_CoreViewModel.ShowDates,
+                    rcm => rcm.m_CoreViewModel.ProjectStartDateTime,
+                    rcm => rcm.m_CoreViewModel.BaseTheme)
+                .ObserveOn(RxApp.TaskpoolScheduler)
+                .Subscribe(async _ => await BuildResourceChartPlotModelAsync());
+
+            Id = Resource.ProjectPlan.Titles.Title_ResourceChartView;
+            Title = Resource.ProjectPlan.Titles.Title_ResourceChartView;
         }
 
         #endregion
 
         #region Properties
 
-        private DateTime ProjectStart => m_CoreViewModel.ProjectStart;
-
-        private bool ShowDates => m_CoreViewModel.ShowDates;
-
-        private bool UseBusinessDays => m_CoreViewModel.UseBusinessDays;
-
-        private bool HasCompilationErrors => m_CoreViewModel.HasCompilationErrors;
-
-        private IGraphCompilation<int, int, IDependentActivity<int, int>> GraphCompilation => m_CoreViewModel.GraphCompilation;
-
-        private ResourceSeriesSetModel ResourceSeriesSet => m_CoreViewModel.ResourceSeriesSet;
-
-        #endregion
-
-        #region Commands
-
-        public DelegateCommandBase InternalCopyResourceChartToClipboardCommand
-        {
-            get;
-            private set;
-        }
-
-        private void CopyResourceChartToClipboard()
-        {
-            lock (m_Lock)
-            {
-                if (CanCopyResourceChartToClipboard())
-                {
-                    var pngExporter = new OxyPlot.Wpf.PngExporter
-                    {
-                        Width = ResourceChartOutputWidth,
-                        Height = ResourceChartOutputHeight,
-                        Background = OxyColors.White
-                    };
-                    BitmapSource bitmap = pngExporter.ExportToBitmap(ResourceChartPlotModel);
-                    System.Windows.Clipboard.SetImage(bitmap);
-                }
-            }
-        }
-
-        private bool CanCopyResourceChartToClipboard()
-        {
-            lock (m_Lock)
-            {
-                return ResourceChartPlotModel != null;
-            }
-        }
-
-        public DelegateCommandBase InternalExportResourceChartToCsvCommand
-        {
-            get;
-            private set;
-        }
-
-        private async void ExportResourceChartToCsv()
-        {
-            await DoExportResourceChartToCsvAsync().ConfigureAwait(true);
-        }
-
-        private bool CanExportResourceChartToCsv()
-        {
-            lock (m_Lock)
-            {
-                return ResourceSeriesSet != null;
-            }
-        }
-
-        #endregion
-
-        #region Public Methods
-
-        public async Task DoExportResourceChartToCsvAsync()
-        {
-            try
-            {
-                IsBusy = true;
-                string directory = m_SettingService.PlanDirectory;
-
-                var filter = new FileDialogFileTypeFilter(
-                    Resource.ProjectPlan.Filters.SaveCsvFileType,
-                    Resource.ProjectPlan.Filters.SaveCsvFileExtension
-                    );
-
-                bool result = m_FileDialogService.ShowSaveDialog(directory, filter);
-
-                if (result)
-                {
-                    string filename = m_FileDialogService.Filename;
-                    if (string.IsNullOrWhiteSpace(filename))
-                    {
-                        DispatchNotification(
-                            Resource.ProjectPlan.Resources.Title_Error,
-                            Resource.ProjectPlan.Resources.Message_EmptyFilename);
-                    }
-                    else
-                    {
-                        DataTable dataTable = await BuildResourceChartDataTableAsync().ConfigureAwait(true);
-                        await ChartHelper.ExportDataTableToCsvAsync(dataTable, filename).ConfigureAwait(true);
-                        m_SettingService.SetDirectory(filename);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                DispatchNotification(
-                    Resource.ProjectPlan.Resources.Title_Error,
-                    ex.Message);
-            }
-            finally
-            {
-                IsBusy = false;
-                RaiseCanExecuteChangedAllCommands();
-            }
-        }
-
-        #endregion
-
-        #region Private Methods
-
-        private void InitializeCommands()
-        {
-            CopyResourceChartToClipboardCommand =
-                InternalCopyResourceChartToClipboardCommand =
-                    new DelegateCommand(CopyResourceChartToClipboard, CanCopyResourceChartToClipboard);
-            ExportResourceChartToCsvCommand =
-                InternalExportResourceChartToCsvCommand =
-                    new DelegateCommand(ExportResourceChartToCsv, CanExportResourceChartToCsv);
-        }
-
-        private void RaiseCanExecuteChangedAllCommands()
-        {
-            InternalCopyResourceChartToClipboardCommand.RaiseCanExecuteChanged();
-            InternalExportResourceChartToCsvCommand.RaiseCanExecuteChanged();
-        }
-
-        private void SubscribeToEvents()
-        {
-            m_GraphCompilationUpdatedSubscriptionToken =
-                m_EventService.GetEvent<PubSubEvent<GraphCompilationUpdatedPayload>>()
-                    .Subscribe(payload =>
-                    {
-                        IsBusy = true;
-                        CalculateResourceChartPlotModel();
-                        IsBusy = false;
-                    }, ThreadOption.BackgroundThread);
-        }
-
-        private void UnsubscribeFromEvents()
-        {
-            m_EventService.GetEvent<PubSubEvent<GraphCompilationUpdatedPayload>>()
-                .Unsubscribe(m_GraphCompilationUpdatedSubscriptionToken);
-        }
-
-        private void CalculateResourceChartPlotModel()
-        {
-            lock (m_Lock)
-            {
-                ResourceSeriesSetModel resourceSeriesSet = ResourceSeriesSet;
-                PlotModel plotModel = null;
-
-                if (resourceSeriesSet != null)
-                {
-                    IEnumerable<ResourceSeriesModel> combinedResourceSeries = resourceSeriesSet.Combined.OrderBy(x => x.DisplayOrder);
-
-                    if (combinedResourceSeries.Any())
-                    {
-                        plotModel = new PlotModel();
-                        plotModel.Axes.Add(BuildResourceChartXAxis());
-                        plotModel.Axes.Add(BuildResourceChartYAxis());
-                        plotModel.LegendPlacement = LegendPlacement.Outside;
-                        plotModel.LegendPosition = LegendPosition.RightMiddle;
-
-                        var total = new List<int>();
-                        m_DateTimeCalculator.UseBusinessDays(UseBusinessDays);
-
-                        foreach (ResourceSeriesModel series in combinedResourceSeries)
-                        {
-                            if (series != null)
-                            {
-                                var areaSeries = new AreaSeries
-                                {
-                                    //Smooth = false,
-                                    StrokeThickness = 0.0,
-                                    Title = series.Title,
-                                    Color = OxyColor.FromArgb(
-                                        series.ColorFormat.A,
-                                        series.ColorFormat.R,
-                                        series.ColorFormat.G,
-                                        series.ColorFormat.B)
-                                };
-
-                                if (series.Values.Any())
-                                {
-                                    // Mark the start of the plot.
-                                    areaSeries.Points.Add(new DataPoint(0.0, 0.0));
-                                    areaSeries.Points2.Add(new DataPoint(0.0, 0.0));
-
-                                    for (int i = 0; i < series.Values.Count; i++)
-                                    {
-                                        int j = series.Values[i];
-                                        if (i >= total.Count)
-                                        {
-                                            total.Add(0);
-                                        }
-                                        int dayNumber = i + 1;
-                                        areaSeries.Points.Add(
-                                            new DataPoint(ChartHelper.CalculateChartTimeXValue(dayNumber, ShowDates, ProjectStart, m_DateTimeCalculator),
-                                            total[i]));
-                                        total[i] += j;
-                                        areaSeries.Points2.Add(
-                                            new DataPoint(ChartHelper.CalculateChartTimeXValue(dayNumber, ShowDates, ProjectStart, m_DateTimeCalculator),
-                                            total[i]));
-                                    }
-                                }    
-
-                                plotModel.Series.Add(areaSeries);
-                            }
-                        }
-                    }
-                }
-                ResourceChartPlotModel = plotModel;
-            }
-            RaiseCanExecuteChangedAllCommands();
-        }
-
-        private Axis BuildResourceChartXAxis()
-        {
-            lock (m_Lock)
-            {
-                IEnumerable<IResourceSchedule<int, int>> resourceSchedules = GraphCompilation?.ResourceSchedules;
-                Axis axis = null;
-                if (resourceSchedules != null
-                    && resourceSchedules.Any())
-                {
-                    int finishTime = resourceSchedules.Max(x => x.FinishTime);
-                    m_DateTimeCalculator.UseBusinessDays(UseBusinessDays);
-                    double minValue = ChartHelper.CalculateChartTimeXValue(0, ShowDates, ProjectStart, m_DateTimeCalculator);
-                    double maxValue = ChartHelper.CalculateChartTimeXValue(finishTime, ShowDates, ProjectStart, m_DateTimeCalculator);
-
-                    if (ShowDates)
-                    {
-                        axis = new DateTimeAxis
-                        {
-                            Position = AxisPosition.Bottom,
-                            Minimum = minValue,
-                            Maximum = maxValue,
-                            Title = Resource.ProjectPlan.Resources.Label_TimeAxisTitle,
-                            StringFormat = "d"
-                        };
-                    }
-                    else
-                    {
-                        axis = new LinearAxis
-                        {
-                            Position = AxisPosition.Bottom,
-                            Minimum = minValue,
-                            Maximum = maxValue,
-                            Title = Resource.ProjectPlan.Resources.Label_TimeAxisTitle
-                        };
-                    }
-                }
-                else
-                {
-                    axis = new LinearAxis();
-                }
-                return axis;
-            }
-        }
-
-        private static Axis BuildResourceChartYAxis()
-        {
-            return new LinearAxis
-            {
-                Position = AxisPosition.Left,
-                Title = Resource.ProjectPlan.Resources.Label_ResourcesAxisTitle
-            };
-        }
-
-        private Task<DataTable> BuildResourceChartDataTableAsync()
-        {
-            return Task.Run(() => BuildResourceChartDataTable());
-        }
-
-        private DataTable BuildResourceChartDataTable()
-        {
-            lock (m_Lock)
-            {
-                var table = new DataTable();
-                ResourceSeriesSetModel resourceSeriesSet = ResourceSeriesSet;
-
-                if (resourceSeriesSet != null)
-                {
-                    IEnumerable<ResourceSeriesModel> combinedResourceSeries = resourceSeriesSet.Combined.OrderBy(x => x.DisplayOrder);
-
-                    if (combinedResourceSeries.Any())
-                    {
-                        table.Columns.Add(new DataColumn(Resource.ProjectPlan.Resources.Label_TimeAxisTitle));
-
-                        // Create the column titles.
-                        foreach (ResourceSeriesModel resourceSeries in combinedResourceSeries)
-                        {
-                            var column = new DataColumn(resourceSeries.Title, typeof(int));
-                            table.Columns.Add(column);
-                        }
-
-                        m_DateTimeCalculator.UseBusinessDays(UseBusinessDays);
-
-                        // Pivot the series values.
-                        int valueCount = combinedResourceSeries.Max(x => x.Values.Count);
-                        for (int timeIndex = 0; timeIndex < valueCount; timeIndex++)
-                        {
-                            var rowData = new List<object>
-                                {
-                                    ChartHelper.FormatScheduleOutput(timeIndex, ShowDates, ProjectStart, m_DateTimeCalculator)
-                                };
-                            rowData.AddRange(combinedResourceSeries.Select(x => x.Values[timeIndex] * (ExportResourceChartAsCosts ? x.UnitCost : 1)).Cast<object>());
-                            table.Rows.Add(rowData.ToArray());
-                        }
-                    }
-                }
-
-                return table;
-            }
-        }
-
-        private void DispatchNotification(string title, object content)
-        {
-            m_NotificationInteractionRequest.Raise(
-                new Notification
-                {
-                    Title = title,
-                    Content = content
-                });
-        }
-
-        #endregion
-
-        #region IResourceChartManagerViewModel Members
-
-        public string Title => Resource.ProjectPlan.Resources.Label_ResourceChartsViewTitle;
-
-        public IInteractionRequest NotificationInteractionRequest => m_NotificationInteractionRequest;
-
-        public bool IsBusy
-        {
-            get
-            {
-                return m_CoreViewModel.IsBusy;
-            }
-            private set
-            {
-                lock (m_Lock)
-                {
-                    m_CoreViewModel.IsBusy = value;
-                }
-                RaisePropertyChanged();
-            }
-        }
-
-        public bool HasStaleOutputs => m_CoreViewModel.HasStaleOutputs;
-
-        public bool ExportResourceChartAsCosts
-        {
-            get
-            {
-                return m_ExportResourceChartAsCosts;
-            }
-            set
-            {
-                lock (m_Lock)
-                {
-                    m_ExportResourceChartAsCosts = value;
-                }
-                RaisePropertyChanged();
-            }
-        }
-
+        private PlotModel m_ResourceChartPlotModel;
         public PlotModel ResourceChartPlotModel
         {
             get
@@ -464,72 +120,337 @@ namespace Zametek.ViewModel.ProjectPlan
             }
             private set
             {
+                lock (m_Lock) this.RaiseAndSetIfChanged(ref m_ResourceChartPlotModel, value);
+            }
+        }
+
+        public object? ImageBounds { get; set; }
+
+        #endregion
+
+        #region Private Methods
+
+        private async Task BuildResourceChartPlotModelAsync()
+        {
+            try
+            {
                 lock (m_Lock)
                 {
-                    m_ResourceChartPlotModel = value;
+                    BuildResourceChartPlotModel();
                 }
-                RaisePropertyChanged();
+            }
+            catch (Exception ex)
+            {
+                await m_DialogService.ShowErrorAsync(
+                    Resource.ProjectPlan.Titles.Title_Error,
+                    string.Empty,
+                    ex.Message);
             }
         }
 
-        public int ResourceChartOutputWidth
+        private static PlotModel BuildResourceChartPlotModelInternal(
+            IDateTimeCalculator dateTimeCalculator,
+            ResourceSeriesSetModel resourceSeriesSet,
+            bool showDates,
+            DateTime projectStartDateTime,
+            BaseTheme baseTheme)
         {
-            get
+            ArgumentNullException.ThrowIfNull(dateTimeCalculator);
+            ArgumentNullException.ThrowIfNull(resourceSeriesSet);
+            var plotModel = new PlotModel();
+
+            if (resourceSeriesSet.Combined.Count == 0)
             {
-                return m_ResourceChartOutputWidth;
+                return plotModel.SetBaseTheme(baseTheme);
             }
-            set
+
+            IEnumerable<ResourceSeriesModel> combinedResourceSeries = resourceSeriesSet.Combined.OrderBy(x => x.DisplayOrder);
+            int finishTime = resourceSeriesSet.ResourceSchedules.Select(x => x.FinishTime).DefaultIfEmpty().Max();
+
+            plotModel.Axes.Add(BuildResourceChartXAxis(dateTimeCalculator, finishTime, showDates, projectStartDateTime));
+            plotModel.Axes.Add(BuildResourceChartYAxis());
+
+            var legend = new Legend()
             {
-                m_ResourceChartOutputWidth = value;
-                RaisePropertyChanged();
+                LegendBorder = OxyColors.Black,
+                LegendBackground = OxyColors.Transparent,
+                LegendPosition = LegendPosition.RightMiddle,
+                LegendPlacement = LegendPlacement.Outside,
+                //LegendOrientation = this.LegendOrientation,
+                //LegendItemOrder = this.LegendItemOrder,
+                //LegendItemAlignment = this.LegendItemAlignment,
+                //LegendSymbolPlacement = this.LegendSymbolPlacement,
+                //LegendMaxWidth = this.LegendMaxWidth,
+                //LegendMaxHeight = this.LegendMaxHeight
+            };
+
+            plotModel.Legends.Add(legend);
+
+            if (combinedResourceSeries.Any())
+            {
+                IList<int> total = [];
+
+                foreach (ResourceSeriesModel series in combinedResourceSeries)
+                {
+                    if (series != null)
+                    {
+                        var color = OxyColor.FromArgb(
+                            series.ColorFormat.A,
+                            series.ColorFormat.R,
+                            series.ColorFormat.G,
+                            series.ColorFormat.B);
+
+                        var areaSeries = new AreaSeries
+                        {
+                            //Smooth = false,
+                            StrokeThickness = 0.0,
+                            Title = series.Title,
+                            Fill = color,
+                            Color = color
+                        };
+
+                        if (series.ResourceSchedule.ActivityAllocation.Count != 0)
+                        {
+                            // Mark the start of the plot.
+                            areaSeries.Points.Add(new DataPoint(0.0, 0.0));
+                            areaSeries.Points2.Add(new DataPoint(0.0, 0.0));
+
+                            for (int i = 0; i < series.ResourceSchedule.ActivityAllocation.Count; i++)
+                            {
+                                bool j = series.ResourceSchedule.ActivityAllocation[i];
+                                if (i >= total.Count)
+                                {
+                                    total.Add(0);
+                                }
+                                int dayNumber = i + 1;
+                                areaSeries.Points.Add(
+                                    new DataPoint(ChartHelper.CalculateChartTimeXValue(dayNumber, showDates, projectStartDateTime, dateTimeCalculator),
+                                    total[i]));
+                                total[i] += j ? 1 : 0;
+                                areaSeries.Points2.Add(
+                                    new DataPoint(ChartHelper.CalculateChartTimeXValue(dayNumber, showDates, projectStartDateTime, dateTimeCalculator),
+                                    total[i]));
+                            }
+                        }
+
+                        plotModel.Series.Add(areaSeries);
+                    }
+                }
             }
+
+            if (plotModel is IPlotModel plotModelInterface)
+            {
+                plotModelInterface.Update(true);
+            }
+
+            return plotModel.SetBaseTheme(baseTheme);
         }
 
-        public int ResourceChartOutputHeight
+        private static Axis BuildResourceChartXAxis(
+            IDateTimeCalculator dateTimeCalculator,
+            int finishTime,
+            bool showDates,
+            DateTime projectStartDateTime)
         {
-            get
+            ArgumentNullException.ThrowIfNull(dateTimeCalculator);
+            if (finishTime != default)
             {
-                return m_ResourceChartOutputHeight;
+                double minValue = ChartHelper.CalculateChartTimeXValue(0, showDates, projectStartDateTime, dateTimeCalculator);
+                double maxValue = ChartHelper.CalculateChartTimeXValue(finishTime, showDates, projectStartDateTime, dateTimeCalculator);
+
+                if (showDates)
+                {
+                    return new DateTimeAxis
+                    {
+                        Position = AxisPosition.Bottom,
+                        Minimum = minValue,
+                        Maximum = maxValue,
+                        Title = Resource.ProjectPlan.Labels.Label_TimeAxisTitle,
+                        StringFormat = DateTimeCalculator.DateFormat
+                    };
+                }
+
+                return new LinearAxis
+                {
+                    Position = AxisPosition.Bottom,
+                    Minimum = minValue,
+                    Maximum = maxValue,
+                    Title = Resource.ProjectPlan.Labels.Label_TimeAxisTitle
+                };
             }
-            set
-            {
-                m_ResourceChartOutputHeight = value;
-                RaisePropertyChanged();
-            }
+            return new LinearAxis();
         }
 
-        public ICommand CopyResourceChartToClipboardCommand
+        private static LinearAxis BuildResourceChartYAxis()
         {
-            get;
-            private set;
+            return new LinearAxis
+            {
+                Position = AxisPosition.Left,
+                Title = Resource.ProjectPlan.Labels.Label_ResourcesAxisTitle,
+                MinorStep = 1
+            };
         }
 
-        public ICommand ExportResourceChartToCsvCommand
+        private async Task SaveResourceChartImageFileAsync()
         {
-            get;
-            private set;
+            try
+            {
+                string projectTitle = m_SettingService.ProjectTitle;
+                string directory = m_SettingService.ProjectDirectory;
+                string? filename = await m_DialogService.ShowSaveFileDialogAsync(projectTitle, directory, s_ExportFileFilters);
+
+                if (!string.IsNullOrWhiteSpace(filename)
+                    && ImageBounds is Rect bounds)
+                {
+                    int boundedWidth = Math.Abs(Convert.ToInt32(bounds.Width));
+                    int boundedHeight = Math.Abs(Convert.ToInt32(bounds.Height));
+
+                    await SaveResourceChartImageFileAsync(filename, boundedWidth, boundedHeight);
+                }
+            }
+            catch (Exception ex)
+            {
+                await m_DialogService.ShowErrorAsync(
+                    Resource.ProjectPlan.Titles.Title_Error,
+                    string.Empty,
+                    ex.Message);
+            }
         }
 
         #endregion
 
-        #region IActiveAware Members
+        #region IResourceChartManagerViewModel Members
 
-        public event EventHandler IsActiveChanged;
+        private readonly ObservableAsPropertyHelper<bool> m_IsBusy;
+        public bool IsBusy => m_IsBusy.Value;
 
-        public bool IsActive
+        private readonly ObservableAsPropertyHelper<bool> m_HasStaleOutputs;
+        public bool HasStaleOutputs => m_HasStaleOutputs.Value;
+
+        private readonly ObservableAsPropertyHelper<bool> m_HasCompilationErrors;
+        public bool HasCompilationErrors => m_HasCompilationErrors.Value;
+
+        public ICommand SaveResourceChartImageFileCommand { get; }
+
+        public async Task SaveResourceChartImageFileAsync(
+            string? filename,
+            int width,
+            int height)
         {
-            get
+            if (string.IsNullOrWhiteSpace(filename))
             {
-                return m_IsActive;
+                await m_DialogService.ShowErrorAsync(
+                    Resource.ProjectPlan.Titles.Title_Error,
+                    string.Empty,
+                    Resource.ProjectPlan.Messages.Message_EmptyFilename);
             }
-            set
+            else
             {
-                if (m_IsActive != value)
+                try
                 {
-                    m_IsActive = value;
-                    IsActiveChanged?.Invoke(this, new EventArgs());
+                    string fileExtension = Path.GetExtension(filename);
+
+                    fileExtension.ValueSwitchOn()
+                        .Case($".{Resource.ProjectPlan.Filters.Filter_ImageJpegFileExtension}", _ =>
+                        {
+                            using var stream = File.OpenWrite(filename);
+                            OxyPlot.SkiaSharp.JpegExporter.Export(
+                                ResourceChartPlotModel,
+                                stream,
+                                width,
+                                height,
+                                100);
+                        })
+                        .Case($".{Resource.ProjectPlan.Filters.Filter_ImagePngFileExtension}", _ =>
+                        {
+                            using var stream = File.OpenWrite(filename);
+                            OxyPlot.SkiaSharp.PngExporter.Export(
+                                ResourceChartPlotModel,
+                                stream,
+                                width,
+                                height);
+                        })
+                        .Case($".{Resource.ProjectPlan.Filters.Filter_PdfFileExtension}", _ =>
+                        {
+                            using var stream = File.OpenWrite(filename);
+                            OxyPlot.SkiaSharp.PdfExporter.Export(
+                                ResourceChartPlotModel,
+                                stream,
+                                width,
+                                height);
+                        })
+                        .Default(_ => throw new ArgumentOutOfRangeException(nameof(filename), @$"{Resource.ProjectPlan.Messages.Message_UnableToSaveFile} {filename}"));
+                }
+                catch (Exception ex)
+                {
+                    await m_DialogService.ShowErrorAsync(
+                        Resource.ProjectPlan.Titles.Title_Error,
+                        string.Empty,
+                        ex.Message);
                 }
             }
+        }
+
+        public void BuildResourceChartPlotModel()
+        {
+            PlotModel? plotModel = null;
+
+            lock (m_Lock)
+            {
+                plotModel = BuildResourceChartPlotModelInternal(
+                    m_DateTimeCalculator,
+                    m_CoreViewModel.ResourceSeriesSet,
+                    m_CoreViewModel.ShowDates,
+                    m_CoreViewModel.ProjectStartDateTime,
+                    m_CoreViewModel.BaseTheme);
+            }
+
+            ResourceChartPlotModel = plotModel ?? new PlotModel();
+        }
+
+        #endregion
+
+        #region IKillSubscriptions Members
+
+        public void KillSubscriptions()
+        {
+            m_BuildResourceChartPlotModelSub?.Dispose();
+        }
+
+        #endregion
+
+        #region IDisposable Members
+
+        private bool m_Disposed = false;
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (m_Disposed)
+            {
+                return;
+            }
+
+            if (disposing)
+            {
+                // TODO: dispose managed state (managed objects).
+                KillSubscriptions();
+                m_IsBusy?.Dispose();
+                m_HasStaleOutputs?.Dispose();
+                m_HasCompilationErrors?.Dispose();
+            }
+
+            // TODO: free unmanaged resources (unmanaged objects) and override a finalizer below.
+            // TODO: set large fields to null.
+
+            m_Disposed = true;
+        }
+
+        public void Dispose()
+        {
+            // Dispose of unmanaged resources.
+            Dispose(true);
+            // Suppress finalization.
+            GC.SuppressFinalize(this);
         }
 
         #endregion

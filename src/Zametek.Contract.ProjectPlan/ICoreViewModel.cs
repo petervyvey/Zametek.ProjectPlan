@@ -1,97 +1,99 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using Zametek.Common.ProjectPlan;
 using Zametek.Maths.Graphs;
 
 namespace Zametek.Contract.ProjectPlan
 {
     public interface ICoreViewModel
-        : IPropertyChangedPubSubViewModel
+        : IKillSubscriptions, IDisposable
     {
-        bool IsBusy { get; set; }
+        string ProjectTitle { get; }
 
-        DateTime ProjectStart { get; set; }
+        bool IsBusy { get; }
+
+        ReadyToCompile IsReadyToCompile { get; }
 
         bool IsProjectUpdated { get; set; }
 
+        bool HasStaleOutputs { get; set; }
+
+        DateTimeOffset ProjectStart { get; set; }
+
+        DateTime ProjectStartDateTime { get; set; }
+
+        TimeSpan ProjectStartTimeOffset { get; }
+
         bool ShowDates { get; set; }
+
+        bool UseClassicDates { get; set; }
 
         bool UseBusinessDays { get; set; }
 
-        bool HasStaleOutputs { get; set; }
+        bool ViewEarnedValueProjections { get; set; }
+
+        GroupByMode GanttChartGroupByMode { get; set; }
+
+        AnnotationStyle GanttChartAnnotationStyle { get; set; }
+
+        bool ViewGanttChartGroupLabels { get; set; }
+
+        bool ViewGanttChartProjectFinish { get; set; }
+
+        bool ViewGanttChartTracking { get; set; }
 
         bool AutoCompile { get; set; }
 
-        bool HasCompilationErrors { get; set; }
+        string SelectedTheme { get; set; }
 
-        IGraphCompilation<int, int, IDependentActivity<int, int>> GraphCompilation { get; set; }
+        BaseTheme BaseTheme { get; set; }
 
-        string CompilationOutput { get; set; }
+        ReadOnlyObservableCollection<IManagedActivityViewModel> Activities { get; }
 
-        ArrowGraphModel ArrowGraph { get; set; }
+        ArrowGraphSettingsModel ArrowGraphSettings { get; set; }
 
-        ObservableCollection<IManagedActivityViewModel> Activities { get; }
+        ResourceSettingsModel ResourceSettings { get; set; }
+
+        WorkStreamSettingsModel WorkStreamSettings { get; set; }
+
+        bool HasCompilationErrors { get; }
+
+        IGraphCompilation<int, int, int, IDependentActivity> GraphCompilation { get; }
+
+        ArrowGraphModel ArrowGraph { get; }
 
         ResourceSeriesSetModel ResourceSeriesSet { get; }
 
-        ArrowGraphSettingsModel ArrowGraphSettings { get; }
+        TrackingSeriesSetModel TrackingSeriesSet { get; }
 
-        ResourceSettingsModel ResourceSettings { get; }
+        int? CyclomaticComplexity { get; }
 
-        MetricsModel Metrics { get; set; }
+        int? Duration { get; }
 
-        IApplicationCommands ApplicationCommands { get; }
+        int TrackerIndex { get; set; }
 
-        int? CyclomaticComplexity { get; set; }
+        ReadyToRevise IsReadyToReviseTrackers { get; set; }
 
-        int? Duration { get; set; }
+        ReadyToRevise IsReadyToReviseSettings { get; set; }
 
-        double? DurationManMonths { get; set; }
+        void ClearSettings();
 
-        double? DirectCost { get; set; }
+        void ResetProject();
 
-        double? IndirectCost { get; set; }
+        void ProcessProjectImport(ProjectImportModel projectImportModel);
 
-        double? OtherCost { get; set; }
+        void ProcessProjectPlan(ProjectPlanModel projectPlanModel);
 
-        double? TotalCost { get; set; }
+        ProjectPlanModel BuildProjectPlan();
 
-        double? Efficiency { get; }
+        int AddManagedActivity();
 
-        public CoreStateModel CoreState { get; }
+        void AddManagedActivities(IEnumerable<DependentActivityModel> dependentActivityModels);
 
-        void RecordCoreState();
+        void RemoveManagedActivities(IEnumerable<int> dependentActivities);
 
-        void RecordRedoUndo(Action action);
-
-        void ClearUndoStack();
-
-        void ClearRedoStack();
-
-        void AddManagedActivity();
-
-        void AddManagedActivities(HashSet<DependentActivityModel> dependentActivities);
-
-        void RemoveManagedActivities(HashSet<int> dependentActivities);
+        void AddMilestone(IEnumerable<int> dependentActivities);
 
         void ClearManagedActivities();
-
-        void UpdateArrowGraphSettings(ArrowGraphSettingsModel arrowGraphSettings);
-
-        void UpdateResourceSettings(ResourceSettingsModel resourceSettings);
-
-        void UpdateActivitiesTargetResourceDependencies();
-
-        void UpdateActivitiesAllocatedToResources();
-
-        void UpdateActivitiesProjectStart();
-
-        void UpdateActivitiesUseBusinessDays();
-
-        int RunCalculateResourcedCyclomaticComplexity();
-
-        double CalculateDurationManMonths();
 
         void RunCompile();
 
@@ -99,16 +101,12 @@ namespace Zametek.Contract.ProjectPlan
 
         void RunTransitiveReduction();
 
-        void SetCompilationOutput();
+        void BuildCyclomaticComplexity();
 
-        void CalculateResourceSeriesSet();
+        void BuildArrowGraph();
 
-        void ClearResourceSeriesSet();
+        void BuildResourceSeriesSet();
 
-        void CalculateCosts();
-
-        void ClearCosts();
-
-        void ClearSettings();
+        void BuildTrackingSeriesSet();
     }
 }

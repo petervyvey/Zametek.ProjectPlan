@@ -1,0 +1,51 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+			 xmlns:i="using:Avalonia.Xaml.Interactivity"
+	         xmlns:ia="clr-namespace:Avalonia.Xaml.Interactions.Core;assembly=Avalonia.Xaml.Interactions"
+			 xmlns:resources="using:Zametek.Resource.ProjectPlan"
+			 xmlns:local="using:Zametek.View.ProjectPlan"
+			 xmlns:oxy="using:OxyPlot.Avalonia"
+			 xmlns:vm="using:Zametek.ViewModel.ProjectPlan"
+			 x:DataType="vm:EarnedValueChartManagerViewModel"
+             mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="450"
+             x:Class="Zametek.View.ProjectPlan.EarnedValueChartManagerView">
+	<UserControl.Resources>
+	</UserControl.Resources>
+
+	<DockPanel Margin="7">
+		<DockPanel DockPanel.Dock="Right"
+                   Margin="11,0,0,0">
+			<Label VerticalContentAlignment="Center"
+				   HorizontalContentAlignment="Left"
+				   Height="25"
+				   DockPanel.Dock="Top"
+				   IsTabStop="False"
+				   Margin="0,0,0,3"
+				   Content="{x:Static resources:Labels.Label_ViewProjections}"/>
+
+			<ToggleSwitch DockPanel.Dock="Top"
+					      IsTabStop="False"
+					      Margin="0,0,0,11"
+					      VerticalAlignment="Center"
+					      VerticalContentAlignment="Center"
+						  HorizontalAlignment="Center"
+						  HorizontalContentAlignment="Center"
+					      IsChecked="{Binding Path=ViewProjections, Mode=TwoWay}"/>
+			<Grid/>
+		</DockPanel>
+
+		<Grid>
+			<Grid.ContextMenu>
+				<ContextMenu>
+					<MenuItem Header="{x:Static resources:Menus.Menu_SaveAs}"
+							  Command="{Binding Path=SaveEarnedValueChartImageFileCommand, Mode=OneWay}"/>
+				</ContextMenu>
+			</Grid.ContextMenu>
+			<oxy:PlotView x:Name="oxyplot"
+						  Model="{Binding Path=EarnedValueChartPlotModel, Mode=OneWay}"
+						  Bounds="{Binding Path=ImageBounds, Mode=OneWayToSource}"/>
+		</Grid>
+	</DockPanel>
+</UserControl>

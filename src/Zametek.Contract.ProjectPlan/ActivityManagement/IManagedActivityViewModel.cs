@@ -1,41 +1,36 @@
-﻿using System;
-using System.Collections.Generic;
-using Zametek.Common.ProjectPlan;
-using Zametek.Maths.Graphs;
+﻿using System.ComponentModel;
 
 namespace Zametek.Contract.ProjectPlan
 {
     public interface IManagedActivityViewModel
-        : IDependentActivity<int, int>
+        : IDependentActivity, IDisposable, INotifyPropertyChanged, IKillSubscriptions
     {
-        DateTime ProjectStart { get; set; }
+        bool IsCompiled { get; }
+
+        bool ShowDates { get; }
+
+        DateTimeOffset ProjectStart { get; }
+
+        TimeSpan ProjectStartTimeOffset { get; }
 
         string DependenciesString { get; set; }
-
-        HashSet<int> UpdatedDependencies { get; }
-
-        bool HasUpdatedDependencies { get; set; }
 
         string ResourceDependenciesString { get; }
 
         public string AllocatedToResourcesString { get; }
 
-        DateTime? EarliestStartDateTime { get; }
+        DateTimeOffset? EarliestStartDateTimeOffset { get; }
 
-        DateTime? LatestStartDateTime { get; }
+        DateTimeOffset? LatestStartDateTimeOffset { get; }
 
-        DateTime? EarliestFinishDateTime { get; }
+        DateTimeOffset? EarliestFinishDateTimeOffset { get; }
 
-        DateTime? LatestFinishDateTime { get; }
+        DateTimeOffset? LatestFinishDateTimeOffset { get; }
 
         DateTime? MinimumEarliestStartDateTime { get; set; }
 
         DateTime? MaximumLatestFinishDateTime { get; set; }
 
-        void UseBusinessDays(bool useBusinessDays);
-
-        void SetTargetResources(IEnumerable<ResourceModel> targetResources);
-
-        void UpdateAllocatedToResources();
+        IActivityTrackerSetViewModel TrackerSet { get; }
     }
 }

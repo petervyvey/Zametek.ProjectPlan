@@ -1,28 +1,21 @@
-﻿using OxyPlot;
-using Prism.Interactivity.InteractionRequest;
-using System.Windows.Input;
+﻿using System.Windows.Input;
+using Zametek.Common.ProjectPlan;
 
 namespace Zametek.Contract.ProjectPlan
 {
     public interface IResourceChartManagerViewModel
-        : INamed
+        : IKillSubscriptions
     {
-        IInteractionRequest NotificationInteractionRequest { get; }
-
         bool IsBusy { get; }
 
         bool HasStaleOutputs { get; }
 
-        bool ExportResourceChartAsCosts { get; set; }
+        bool HasCompilationErrors { get; }
 
-        PlotModel ResourceChartPlotModel { get; }
+        ICommand SaveResourceChartImageFileCommand { get; }
 
-        int ResourceChartOutputWidth { get; set; }
+        Task SaveResourceChartImageFileAsync(string? filename, int width, int height);
 
-        int ResourceChartOutputHeight { get; set; }
-
-        ICommand CopyResourceChartToClipboardCommand { get; }
-
-        ICommand ExportResourceChartToCsvCommand { get; }
+        void BuildResourceChartPlotModel();
     }
 }

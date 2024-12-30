@@ -1,0 +1,301 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+			 xmlns:i="using:Avalonia.Xaml.Interactivity"
+	         xmlns:ia="clr-namespace:Avalonia.Xaml.Interactions.Core;assembly=Avalonia.Xaml.Interactions"
+			 xmlns:resources="using:Zametek.Resource.ProjectPlan"
+			 xmlns:local="using:Zametek.View.ProjectPlan"
+			 xmlns:oxy="using:OxyPlot.Avalonia"
+			 xmlns:vm="using:Zametek.ViewModel.ProjectPlan"
+			 xmlns:sys="using:System"
+			 x:DataType="vm:TrackingManagerViewModel"
+			 xmlns:u="https://irihi.tech/ursa"
+             mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="450"
+             x:Class="Zametek.View.ProjectPlan.TrackingManagerView">
+	<UserControl.Resources>
+		<local:ManagedActivitySortComparer x:Key="activityIdSortComparer" SortMemberPath="Id"/>
+		<local:ManagedActivitySortComparer x:Key="activityNameSortComparer" SortMemberPath="Name"/>
+		<local:ManagedResourceSortComparer x:Key="resourceIdSortComparer" SortMemberPath="Id"/>
+		<local:ManagedResourceSortComparer x:Key="resourceNameSortComparer" SortMemberPath="Name"/>
+		<sys:Int32 x:Key="paginationPageSize">1</sys:Int32>
+		<sys:Int32 x:Key="paginationTotalCount">10000</sys:Int32>
+	</UserControl.Resources>
+
+	<DockPanel Margin="7">
+		<DockPanel DockPanel.Dock="Bottom">
+			<u:Pagination PageSize="{StaticResource paginationPageSize}"
+						  TotalCount="{StaticResource paginationTotalCount}"
+						  DockPanel.Dock="Left"
+						  CurrentPage="{Binding Path=PageIndex, Mode=TwoWay}" />
+
+			<u:Pagination PageSize="{StaticResource paginationPageSize}"
+						  TotalCount="{StaticResource paginationTotalCount}"
+						  Theme="{DynamicResource TinyPagination}"
+						  DockPanel.Dock="Right"
+						  CurrentPage="{Binding Path=PageIndex, Mode=TwoWay}" />
+
+			<Grid />
+		</DockPanel>
+
+		<Grid RowDefinitions="*, 4, *">
+			<DataGrid Name="ResourcesGrid"
+					  Grid.Row="0"
+					  FrozenColumnCount="2"
+					  AutoGenerateColumns="False"
+					  RowHeight="30"
+					  ItemsSource="{Binding Path=Resources, Mode=OneWay}"
+					  HorizontalScrollBarVisibility="Disabled"
+					  SelectionMode="Extended"
+					  CanUserResizeColumns="True"
+					  CanUserSortColumns="True"
+					  GridLinesVisibility="All"
+					  CanUserReorderColumns="True">
+				<DataGrid.Styles>
+					<Style Selector="DataGridRow Grid.editable">
+						<Setter Property="Background" Value="{DynamicResource EditableCellGridBackgroundBrush}"/>
+					</Style>
+					<Style Selector="DataGridRow:not(:pointerover) Grid.editable">
+						<Setter Property="Background" Value="{DynamicResource EditableCellGridBackgroundBrush}"/>
+					</Style>
+					<Style Selector="DataGridRow:not(:selected) Grid.editable">
+						<Setter Property="Background" Value="{DynamicResource EditableCellGridBackgroundBrush}"/>
+					</Style>
+					<Style Selector="DataGridRow:selected Grid.editable">
+						<Setter Property="Background" Value="{DynamicResource EditableSelectedCellGridBackgroundBrush}"/>
+					</Style>
+					<Style Selector="DataGridRow:pointerover Grid.editable">
+						<Setter Property="Background" Value="{DynamicResource EditableHoverCellGridBackgroundBrush}"/>
+					</Style>
+					<!--<Style Selector="DataGridCell:selected:pointerover Grid.editable">
+					<Setter Property="Background" Value="Orange"/>
+				</Style>-->
+					<Style Selector="DataGridCell:selected:current:focus Grid.editable">
+						<Setter Property="Background" Value="{DynamicResource EditableSelectedCurrentFocusCellGridBackgroundBrush}"/>
+					</Style>
+					<!--<Style Selector="DataGridCell:selected:pointerover:current:focus Grid.editable">
+					<Setter Property="Background" Value="Green"/>
+				</Style>-->
+				</DataGrid.Styles>
+
+				<DataGrid.Columns>
+					<DataGridTemplateColumn CanUserResize="True"
+											CanUserReorder="False"
+											CanUserSort="True"
+											IsReadOnly="True"
+											CustomSortComparer="{StaticResource resourceIdSortComparer}"
+											Width="50">
+						<DataGridTemplateColumn.HeaderTemplate>
+							<DataTemplate>
+								<TextBlock VerticalAlignment="Center"
+										   Margin="0"
+										   Padding="3"
+										   Text="{x:Static resources:Labels.Label_Id}"
+										   ToolTip.Tip="{x:Static resources:ToolTips.ToolTip_Id}"/>
+							</DataTemplate>
+						</DataGridTemplateColumn.HeaderTemplate>
+						<DataGridTemplateColumn.CellTemplate>
+							<DataTemplate>
+								<Grid VerticalAlignment="Stretch">
+									<TextBlock VerticalAlignment="Center"
+											   Margin="0"
+											   Padding="3"
+											   Text="{Binding Path=Id, Mode=OneWay}"/>
+								</Grid>
+							</DataTemplate>
+						</DataGridTemplateColumn.CellTemplate>
+					</DataGridTemplateColumn>
+
+					<DataGridTemplateColumn CanUserResize="True"
+											CanUserReorder="False"
+											CanUserSort="True"
+											CustomSortComparer="{StaticResource resourceNameSortComparer}"
+											Width="125">
+						<DataGridTemplateColumn.HeaderTemplate>
+							<DataTemplate>
+								<TextBlock VerticalAlignment="Center"
+										   Margin="0"
+										   Padding="3"
+										   Text="{x:Static resources:Labels.Label_ResourceName}"
+										   ToolTip.Tip="{x:Static resources:ToolTips.ToolTip_ResourceName}"/>
+							</DataTemplate>
+						</DataGridTemplateColumn.HeaderTemplate>
+						<DataGridTemplateColumn.CellTemplate>
+							<DataTemplate>
+								<Grid VerticalAlignment="Stretch">
+									<TextBlock VerticalAlignment="Center"
+											   Margin="0"
+											   Padding="3"
+											   Text="{Binding Path=Name, Mode=OneWay}"/>
+								</Grid>
+							</DataTemplate>
+						</DataGridTemplateColumn.CellTemplate>
+					</DataGridTemplateColumn>
+
+					<DataGridTemplateColumn CanUserResize="True"
+											CanUserReorder="False"
+											CanUserSort="False"
+											Width="60">
+						<DataGridTemplateColumn.HeaderTemplate>
+							<DataTemplate>
+								<TextBlock VerticalAlignment="Center"
+										   Margin="0"
+										   Padding="3"
+										   Text="{x:Static resources:Labels.Label_Find}"
+										   ToolTip.Tip="{x:Static resources:ToolTips.ToolTip_Find}"/>
+							</DataTemplate>
+						</DataGridTemplateColumn.HeaderTemplate>
+						<DataGridTemplateColumn.CellTemplate>
+							<DataTemplate>
+								<Grid VerticalAlignment="Stretch">
+									<Button Margin="0"
+											Padding="0"
+											VerticalAlignment="Stretch"
+											VerticalContentAlignment="Center"
+											HorizontalAlignment="Stretch"
+											HorizontalContentAlignment="Center"
+											FontWeight="ExtraBold"
+											Command="{Binding Path=TrackerSet.SetTrackerIndexCommand, Mode=OneWay}"
+											CommandParameter="{Binding Path=TrackerSet.LastTrackerIndex, Mode=OneWay}"
+											Content="{Binding Path=TrackerSet.SearchSymbol, Mode=OneWay}"/>
+								</Grid>
+							</DataTemplate>
+						</DataGridTemplateColumn.CellTemplate>
+					</DataGridTemplateColumn>
+
+					<!--Add remaining columns in code behind.-->
+				</DataGrid.Columns>
+			</DataGrid>
+
+			<GridSplitter Grid.Row="1" Background="Black" ResizeDirection="Rows"/>
+
+			<DataGrid Name="ActivitiesGrid"
+					  Grid.Row="2"
+					  FrozenColumnCount="2"
+					  AutoGenerateColumns="False"
+					  RowHeight="30"
+					  ItemsSource="{Binding Path=Activities, Mode=OneWay}"
+					  HorizontalScrollBarVisibility="Disabled"
+					  SelectionMode="Extended"
+					  CanUserResizeColumns="True"
+					  CanUserSortColumns="True"
+					  GridLinesVisibility="All"
+					  CanUserReorderColumns="True">
+				<DataGrid.Styles>
+					<Style Selector="DataGridRow Grid.editable">
+						<Setter Property="Background" Value="{DynamicResource EditableCellGridBackgroundBrush}"/>
+					</Style>
+					<Style Selector="DataGridRow:not(:pointerover) Grid.editable">
+						<Setter Property="Background" Value="{DynamicResource EditableCellGridBackgroundBrush}"/>
+					</Style>
+					<Style Selector="DataGridRow:not(:selected) Grid.editable">
+						<Setter Property="Background" Value="{DynamicResource EditableCellGridBackgroundBrush}"/>
+					</Style>
+					<Style Selector="DataGridRow:selected Grid.editable">
+						<Setter Property="Background" Value="{DynamicResource EditableSelectedCellGridBackgroundBrush}"/>
+					</Style>
+					<Style Selector="DataGridRow:pointerover Grid.editable">
+						<Setter Property="Background" Value="{DynamicResource EditableHoverCellGridBackgroundBrush}"/>
+					</Style>
+					<!--<Style Selector="DataGridCell:selected:pointerover Grid.editable">
+					<Setter Property="Background" Value="Orange"/>
+				</Style>-->
+					<Style Selector="DataGridCell:selected:current:focus Grid.editable">
+						<Setter Property="Background" Value="{DynamicResource EditableSelectedCurrentFocusCellGridBackgroundBrush}"/>
+					</Style>
+					<!--<Style Selector="DataGridCell:selected:pointerover:current:focus Grid.editable">
+					<Setter Property="Background" Value="Green"/>
+				</Style>-->
+				</DataGrid.Styles>
+
+				<DataGrid.Columns>
+					<DataGridTemplateColumn CanUserResize="True"
+											CanUserReorder="False"
+											CanUserSort="True"
+											IsReadOnly="True"
+											CustomSortComparer="{StaticResource activityIdSortComparer}"
+											Width="50">
+						<DataGridTemplateColumn.HeaderTemplate>
+							<DataTemplate>
+								<TextBlock VerticalAlignment="Center"
+										   Margin="0"
+										   Padding="3"
+										   Text="{x:Static resources:Labels.Label_Id}"
+										   ToolTip.Tip="{x:Static resources:ToolTips.ToolTip_Id}"/>
+							</DataTemplate>
+						</DataGridTemplateColumn.HeaderTemplate>
+						<DataGridTemplateColumn.CellTemplate>
+							<DataTemplate>
+								<Grid VerticalAlignment="Stretch">
+									<TextBlock VerticalAlignment="Center"
+											   Margin="0"
+											   Padding="3"
+											   Text="{Binding Path=Id, Mode=OneWay}"/>
+								</Grid>
+							</DataTemplate>
+						</DataGridTemplateColumn.CellTemplate>
+					</DataGridTemplateColumn>
+
+					<DataGridTemplateColumn CanUserResize="True"
+											CanUserReorder="False"
+											CanUserSort="True"
+											CustomSortComparer="{StaticResource activityNameSortComparer}"
+											Width="125">
+						<DataGridTemplateColumn.HeaderTemplate>
+							<DataTemplate>
+								<TextBlock VerticalAlignment="Center"
+										   Margin="0"
+										   Padding="3"
+										   Text="{x:Static resources:Labels.Label_ActivityName}"
+										   ToolTip.Tip="{x:Static resources:ToolTips.ToolTip_ActivityName}"/>
+							</DataTemplate>
+						</DataGridTemplateColumn.HeaderTemplate>
+						<DataGridTemplateColumn.CellTemplate>
+							<DataTemplate>
+								<Grid VerticalAlignment="Stretch">
+									<TextBlock VerticalAlignment="Center"
+											   Margin="0"
+											   Padding="3"
+											   Text="{Binding Path=Name, Mode=OneWay}"/>
+								</Grid>
+							</DataTemplate>
+						</DataGridTemplateColumn.CellTemplate>
+					</DataGridTemplateColumn>
+
+					<DataGridTemplateColumn CanUserResize="True"
+											CanUserReorder="False"
+											CanUserSort="False"
+											Width="60">
+						<DataGridTemplateColumn.HeaderTemplate>
+							<DataTemplate>
+								<TextBlock VerticalAlignment="Center"
+										   Margin="0"
+										   Padding="3"
+										   Text="{x:Static resources:Labels.Label_Find}"
+										   ToolTip.Tip="{x:Static resources:ToolTips.ToolTip_Find}"/>
+							</DataTemplate>
+						</DataGridTemplateColumn.HeaderTemplate>
+						<DataGridTemplateColumn.CellTemplate>
+							<DataTemplate>
+								<Grid VerticalAlignment="Stretch">
+									<Button Margin="0"
+											Padding="0"
+											VerticalAlignment="Stretch"
+											VerticalContentAlignment="Center"
+											HorizontalAlignment="Stretch"
+											HorizontalContentAlignment="Center"
+											FontWeight="ExtraBold"
+											Command="{Binding Path=TrackerSet.SetTrackerIndexCommand, Mode=OneWay}"
+											CommandParameter="{Binding Path=TrackerSet.LastTrackerIndex, Mode=OneWay}"
+											Content="{Binding Path=TrackerSet.SearchSymbol, Mode=OneWay}"/>
+								</Grid>
+							</DataTemplate>
+						</DataGridTemplateColumn.CellTemplate>
+					</DataGridTemplateColumn>
+
+					<!--Add remaining columns in code behind.-->
+				</DataGrid.Columns>
+			</DataGrid>
+		</Grid>
+	</DockPanel>
+</UserControl>

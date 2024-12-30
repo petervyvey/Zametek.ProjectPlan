@@ -1,18 +1,27 @@
-﻿using System;
-using Zametek.Common.ProjectPlan;
+﻿using Zametek.Common.ProjectPlan;
 
 namespace Zametek.Contract.ProjectPlan
 {
     public interface IDateTimeCalculator
     {
-        DateTimeCalculatorMode Mode { get; }
+        DateTimeCalculatorMode CalculatorMode { get; set; }
+
+        DateTimeDisplayMode DisplayMode { get; set; }
 
         int DaysPerWeek { get; }
 
-        void UseBusinessDays(bool useBusinessDays);
+        DateTimeOffset AddDays(DateTimeOffset startDateTime, int days);
 
-        DateTime AddDays(DateTime startDateTime, int days);
+        int CountDays(DateTimeOffset current, DateTimeOffset toCompareWith);
 
-        int CountDays(DateTime current, DateTime toCompareWith);
+        DateTimeOffset DisplayEarliestStartDate(DateTimeOffset projectStart, DateTimeOffset earliestStart, int duration);
+
+        DateTimeOffset DisplayLatestStartDate(DateTimeOffset earliestStart, DateTimeOffset latestStart, int duration);
+
+        DateTimeOffset DisplayFinishDate(DateTimeOffset start, DateTimeOffset finish, int duration);
+
+        DateTimeOffset MaximumLatestFinishDateIn(DateTimeOffset start, DateTimeOffset maxLatestFinish, int duration);
+
+        DateTimeOffset MaximumLatestFinishDateOut(DateTimeOffset start, DateTimeOffset maxLatestFinish, int duration);
     }
 }

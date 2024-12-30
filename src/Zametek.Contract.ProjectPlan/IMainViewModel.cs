@@ -1,43 +1,48 @@
-﻿using Prism.Interactivity.InteractionRequest;
-using System;
-using System.Threading.Tasks;
-using System.Windows.Input;
+﻿using System.Windows.Input;
 using Zametek.Common.ProjectPlan;
 
 namespace Zametek.Contract.ProjectPlan
 {
     public interface IMainViewModel
-        : INamed
+        : IDisposable
     {
-        IInteractionRequest ConfirmationInteractionRequest { get; }
-
-        IInteractionRequest NotificationInteractionRequest { get; }
-
-        IInteractionRequest ResourceSettingsManagerInteractionRequest { get; }
-
-        IInteractionRequest ArrowGraphSettingsManagerInteractionRequest { get; }
-
-        IInteractionRequest AboutInteractionRequest { get; }
+        string ProjectTitle { get; }
 
         bool IsBusy { get; }
 
-        string Title { get; }
+        bool IsOpening { get; }
+
+        bool IsSaving { get; }
+
+        bool IsSavingAs { get; }
+
+        bool IsImporting { get; }
+
+        bool IsExporting { get; }
+
+        bool IsClosing { get; }
 
         bool IsProjectUpdated { get; }
 
-        DateTime ProjectStart { get; set; }
+        DateTimeOffset ProjectStart { get; set; }
+
+        DateTime ProjectStartDateTime { get; set; }
+
+        bool HasStaleOutputs { get; }
+
+        bool HasCompilationErrors { get; }
 
         bool ShowDates { get; set; }
+
+        bool UseClassicDates { get; set; }
 
         bool UseBusinessDays { get; set; }
 
         bool AutoCompile { get; set; }
 
-        ArrowGraphSettingsModel ArrowGraphSettings { get; }
+        string SelectedTheme { get; set; }
 
-        ResourceSettingsModel ResourceSettings { get; }
-
-        IApplicationCommands ApplicationCommands { get; }
+        BaseTheme BaseTheme { get; set; }
 
         ICommand OpenProjectPlanFileCommand { get; }
 
@@ -45,21 +50,23 @@ namespace Zametek.Contract.ProjectPlan
 
         ICommand SaveAsProjectPlanFileCommand { get; }
 
-        ICommand ImportProjectCommand { get; }
+        ICommand ImportProjectFileCommand { get; }
 
-        ICommand CloseProjectCommand { get; }
+        ICommand ExportProjectFileCommand { get; }
 
-        ICommand OpenResourceSettingsCommand { get; }
-
-        ICommand OpenArrowGraphSettingsCommand { get; }
+        ICommand CloseProjectPlanCommand { get; }
 
         ICommand ToggleShowDatesCommand { get; }
 
+        ICommand ToggleUseClassicDatesCommand { get; }
+
         ICommand ToggleUseBusinessDaysCommand { get; }
 
-        ICommand CalculateResourcedCyclomaticComplexityCommand { get; }
+        ICommand ChangeThemeCommand { get; }
 
         ICommand CompileCommand { get; }
+
+        ICommand ToggleAutoCompileCommand { get; }
 
         ICommand TransitiveReductionCommand { get; }
 
@@ -67,8 +74,26 @@ namespace Zametek.Contract.ProjectPlan
 
         ICommand OpenAboutCommand { get; }
 
-        ICommand ExportScenariosCommand { get; }
+        void CloseLayout();
 
-        Task DoOpenProjectPlanFileAsync(string fileName = null);
+        void ResetLayout();
+
+        Task OpenProjectPlanFileAsync();
+
+        Task OpenProjectPlanFileAsync(string? filename);
+
+        Task SaveProjectPlanFileAsync();
+
+        Task SaveAsProjectPlanFileAsync();
+
+        Task ImportProjectFileAsync();
+
+        Task ExportProjectFileAsync();
+
+        Task CloseProjectPlanAsync();
+
+        Task OpenHyperLinkAsync(string hyperlink);
+
+        Task OpenAboutAsync();
     }
 }
